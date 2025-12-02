@@ -146,7 +146,7 @@ class LGBMDataValuator:
 
             # Train model
             model = LGBMClassifier(**params, random_state=self.random_state)
-            model.fit(X_subset, y_subset, verbose=0)
+            model.fit(X_subset, y_subset)
 
             # Evaluate on test set
             y_pred_proba = model.predict_proba(self.X_test)[:, 1]
@@ -155,7 +155,7 @@ class LGBMDataValuator:
             return auroc
 
         except Exception as e:
-            warnings.warn(f"Training failed for subset: {str(e)}")
+            console.print(f"[red]Training failed for subset of size {len(indices)}: {str(e)}[/red]")
             return 0.0
 
     def compute_shapley_values(
