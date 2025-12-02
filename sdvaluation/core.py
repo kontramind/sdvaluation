@@ -183,7 +183,28 @@ def run_data_valuation(
     if encoding_config is not None:
         console.print(f"  Using RDT encoding: {encoding_config}")
         config = load_encoding_config(encoding_config)
-        encoder = RDTDatasetEncoder(config)
+
+        # Filter config to exclude target column
+        feature_columns = set(X_train_original.columns)
+        filtered_config = {
+            "sdtypes": {
+                col: dtype
+                for col, dtype in config["sdtypes"].items()
+                if col in feature_columns
+            },
+            "transformers": {
+                col: transformer
+                for col, transformer in config["transformers"].items()
+                if col in feature_columns
+            },
+        }
+
+        console.print(
+            f"  Filtered encoding config: {len(filtered_config['sdtypes'])} feature columns "
+            f"(excluded target: {target_column})"
+        )
+
+        encoder = RDTDatasetEncoder(filtered_config)
         encoder.fit(X_train_original)
         X_train = encoder.transform(X_train_original)
         X_test = encoder.transform(X_test_original)
