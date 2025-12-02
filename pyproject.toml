@@ -7,11 +7,12 @@ name = "sdvaluation"
 version = "0.1.0"
 description = "Data Shapley valuation for synthetic data"
 authors = [
-    {name = "Aleksandar Babic", email = "aleksandar.babic@gmail.com"}
+    {name = "Aleksandar Babic", email = "aleksandar.babic@gmail.com"},
 ]
-license = {text = "Apache-2.0"}
 readme = "README.md"
 requires-python = ">=3.12"
+license = {text = "Apache-2.0"}
+
 dependencies = [
     "numpy>=1.21.0",
     "pandas>=1.5.0",
@@ -24,11 +25,10 @@ dependencies = [
     "pyyaml>=6.0",
 ]
 
-[project.urls]
-Repository = "https://github.com/kontramind/sdvaluation"
-
 [project.scripts]
 sdvaluation = "sdvaluation.__main__:app"
 
-[tool.uv]
-dev-dependencies = []
+[project.urls]
+Homepage = "https://github.com/kontramind/sdvaluation"
+Repository = "https://github.com/kontramind/sdvaluation"
+Issues = "https://github.com/kontramind/sdvaluation/issues"
