@@ -194,10 +194,10 @@ from sdvaluation.core import run_data_valuation
 
 # Run data valuation
 run_data_valuation(
-    train_data_path=Path("data/synthetic_train.csv"),
-    test_data_path=Path("data/real_test.csv"),
+    train_file=Path("data/synthetic_train.csv"),
+    test_file=Path("data/real_test.csv"),
     target_column="IS_READMISSION_30D",
-    encoding_config_path=Path("configs/encoding.yaml"),
+    encoding_config=Path("configs/encoding.yaml"),
     num_samples=100,
     max_coalition_size=None,
     random_state=42,
