@@ -155,10 +155,10 @@ def data_valuation_mimic_iii(
         console.print("[green]Starting Data Shapley computation...[/green]\n")
 
         run_data_valuation(
-            train_data_path=train_data,
-            test_data_path=test_data,
+            train_file=train_data,
+            test_file=test_data,
             target_column=target_column,
-            encoding_config_path=encoding_config,
+            encoding_config=encoding_config,
             num_samples=num_samples,
             max_coalition_size=max_coalition_size,
             random_state=random_state,
