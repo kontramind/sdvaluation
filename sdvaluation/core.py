@@ -208,6 +208,15 @@ def run_data_valuation(
         encoder.fit(X_train_original)
         X_train = encoder.transform(X_train_original)
         X_test = encoder.transform(X_test_original)
+
+        # Reset indexes to ensure sequential integer indexing
+        X_train = X_train.reset_index(drop=True)
+        X_test = X_test.reset_index(drop=True)
+        X_train_original = X_train_original.reset_index(drop=True)
+        X_test_original = X_test_original.reset_index(drop=True)
+        y_train = y_train.reset_index(drop=True)
+        y_test = y_test.reset_index(drop=True)
+
         console.print(
             f"  Encoded features: {len(X_train.columns)} "
             f"(from {len(X_train_original.columns)} original)"
@@ -225,6 +234,14 @@ def run_data_valuation(
                 le = LabelEncoder()
                 X_train[col] = le.fit_transform(X_train[col].astype(str))
                 X_test[col] = le.transform(X_test[col].astype(str))
+
+        # Reset indexes to ensure sequential integer indexing
+        X_train = X_train.reset_index(drop=True)
+        X_test = X_test.reset_index(drop=True)
+        X_train_original = X_train_original.reset_index(drop=True)
+        X_test_original = X_test_original.reset_index(drop=True)
+        y_train = y_train.reset_index(drop=True)
+        y_test = y_test.reset_index(drop=True)
 
         console.print(f"  Features: {len(X_train.columns)}")
 

@@ -146,7 +146,7 @@ class LGBMDataValuator:
 
             # Train model
             model = LGBMClassifier(**params, random_state=self.random_state)
-            model.fit(X_subset, y_subset, verbose=0)
+            model.fit(X_subset, y_subset)
 
             # Evaluate on test set
             y_pred_proba = model.predict_proba(self.X_test)[:, 1]
@@ -155,7 +155,7 @@ class LGBMDataValuator:
             return auroc
 
         except Exception as e:
-            warnings.warn(f"Training failed for subset: {str(e)}")
+            console.print(f"[red]Training failed for subset of size {len(indices)}: {str(e)}[/red]")
             return 0.0
 
     def compute_shapley_values(
@@ -292,6 +292,11 @@ class LGBMDataValuator:
         Save Shapley values and uncertainty metrics to CSV.
 
         Results are sorted by Shapley value (most harmful first).
+        Output format matches sdpype convention:
+        - Original feature columns first (if include_features=True)
+        - Target column
+        - Shapley metrics
+        - Sample index
 
         Args:
             output_path: Path to save CSV file
@@ -305,23 +310,24 @@ class LGBMDataValuator:
                 "Shapley values not computed. Run compute_shapley_values() first."
             )
 
-        # Create results DataFrame
-        results = pd.DataFrame(
-            {
-                "point_id": range(self.n_train),
-                "shapley_value": self.shapley_values,
-                "shapley_std": self.shapley_std,
-                "shapley_se": self.shapley_se,
-                "shapley_ci_lower": self.shapley_ci_lower,
-                "shapley_ci_upper": self.shapley_ci_upper,
-                "target": self.y_train.values,
-            }
-        )
-
-        # Add original features if available
+        # Start with original features if available (sdpype format)
         if include_features and self.X_train_original is not None:
-            for col in self.X_train_original.columns:
-                results[f"feature_{col}"] = self.X_train_original[col].values
+            results = self.X_train_original.copy()
+        else:
+            results = pd.DataFrame()
+
+        # Add target column
+        results["target"] = self.y_train.values
+
+        # Add Shapley metrics
+        results["shapley_value"] = self.shapley_values
+        results["shapley_std"] = self.shapley_std
+        results["shapley_se"] = self.shapley_se
+        results["shapley_ci_lower"] = self.shapley_ci_lower
+        results["shapley_ci_upper"] = self.shapley_ci_upper
+
+        # Add sample index (matching sdpype)
+        results["sample_index"] = range(self.n_train)
 
         # Sort by Shapley value (most harmful first)
         results = results.sort_values("shapley_value", ascending=True)
@@ -357,7 +363,7 @@ class LGBMDataValuator:
 
         results = pd.DataFrame(
             {
-                "point_id": harmful_indices,
+                "sample_index": harmful_indices,
                 "shapley_value": self.shapley_values[harmful_indices],
                 "shapley_std": self.shapley_std[harmful_indices],
                 "shapley_se": self.shapley_se[harmful_indices],
@@ -392,7 +398,7 @@ class LGBMDataValuator:
 
         results = pd.DataFrame(
             {
-                "point_id": beneficial_indices,
+                "sample_index": beneficial_indices,
                 "shapley_value": self.shapley_values[beneficial_indices],
                 "shapley_std": self.shapley_std[beneficial_indices],
                 "shapley_se": self.shapley_se[beneficial_indices],

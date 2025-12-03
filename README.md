@@ -85,18 +85,20 @@ sdvaluation shapley \
 
 ## Output Format
 
-The valuation results are saved as a CSV file in the specified output directory. Each row represents one training sample with the following columns:
+The valuation results are saved as a CSV file in the specified output directory. Each row represents one training sample with the following columns (in order):
 
 | Column | Description |
 |--------|-------------|
-| `{features}` | Original feature columns (if `include_features=True`) |
-| `{target}` | Target column value |
+| `{feature_columns}` | Original feature columns with their names (if `include_features=True`) |
+| `target` | Target column value |
 | `shapley_value` | Estimated Data Shapley value |
 | `shapley_std` | Standard deviation of the estimate |
 | `shapley_se` | Standard error of the estimate |
 | `shapley_ci_lower` | Lower bound of 95% confidence interval |
 | `shapley_ci_upper` | Upper bound of 95% confidence interval |
 | `sample_index` | Index of the sample in the training data |
+
+**Note:** Rows are sorted by `shapley_value` in ascending order (most harmful samples first).
 
 ## Understanding Shapley Values
 
