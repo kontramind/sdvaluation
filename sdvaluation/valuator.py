@@ -391,6 +391,16 @@ class LGBMDataValuator:
         X_test_np = self.X_test.values
         y_test_np = self.y_test.to_numpy().astype(int).reshape(-1)  # Ensure 1D integer array
 
+        # Debug: Print shapes
+        if show_progress:
+            console.print(f"\n[yellow]Debug - Array shapes:[/yellow]")
+            console.print(f"  X_train: {X_train_np.shape}")
+            console.print(f"  y_train: {y_train_np.shape}")
+            console.print(f"  X_test: {X_test_np.shape}")
+            console.print(f"  y_test: {y_test_np.shape}")
+            console.print(f"  y_train dtype: {y_train_np.dtype}")
+            console.print(f"  y_test dtype: {y_test_np.dtype}")
+
         # Setup data using from_data_splits
         # Key: Use synthetic for training, real for validation/test
         fetcher = DataFetcher.from_data_splits(
