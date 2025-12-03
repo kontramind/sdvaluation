@@ -299,8 +299,8 @@ class LGBMDataValuator:
                 # Generate random seeds for reproducibility
                 random_seeds = [self.random_state + i for i in range(num_samples)]
 
-                # Use multiprocessing backend for true multi-core parallelism
-                # Uses standard library multiprocessing (more stable than loky)
+                # Use loky backend for true multi-core parallelism
+                # Loky supports return_as='generator' for real-time progress
                 import time
                 from tqdm import tqdm
                 start_time = time.time()
@@ -311,7 +311,7 @@ class LGBMDataValuator:
                     results = []
                     for result in Parallel(
                         n_jobs=n_jobs,
-                        backend="multiprocessing",
+                        backend="loky",
                         return_as='generator',
                     )(
                         delayed(self._compute_single_permutation)(
