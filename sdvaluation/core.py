@@ -331,6 +331,37 @@ def run_data_valuation(
         f"({100 * n_zero / valuator.n_train:.2f}%)"
     )
 
+    # Count RELIABLY negative/positive (with statistical confidence)
+    # Reliably harmful: entire 95% CI is below zero (CI upper bound < 0)
+    # Reliably beneficial: entire 95% CI is above zero (CI lower bound > 0)
+    n_reliable_negative = np.sum(valuator.shapley_ci_upper < 0)
+    n_reliable_positive = np.sum(valuator.shapley_ci_lower > 0)
+    n_uncertain = valuator.n_train - n_reliable_negative - n_reliable_positive
+
+    # Compute confidence intervals for reliable proportions
+    reliable_neg_ci_lower, reliable_neg_ci_upper = _compute_proportion_ci(
+        n_reliable_negative, valuator.n_train
+    )
+    reliable_pos_ci_lower, reliable_pos_ci_upper = _compute_proportion_ci(
+        n_reliable_positive, valuator.n_train
+    )
+
+    console.print(f"\n[bold]Statistical Confidence (95% CI-based):[/bold]")
+    console.print(
+        f"  Reliably harmful (CI upper < 0):    {n_reliable_negative:,} "
+        f"({100 * n_reliable_negative / valuator.n_train:.2f}%) "
+        f"[95% CI: {reliable_neg_ci_lower:.2f}%-{reliable_neg_ci_upper:.2f}%]"
+    )
+    console.print(
+        f"  Reliably beneficial (CI lower > 0): {n_reliable_positive:,} "
+        f"({100 * n_reliable_positive / valuator.n_train:.2f}%) "
+        f"[95% CI: {reliable_pos_ci_lower:.2f}%-{reliable_pos_ci_upper:.2f}%]"
+    )
+    console.print(
+        f"  Uncertain (CI spans 0):             {n_uncertain:,} "
+        f"({100 * n_uncertain / valuator.n_train:.2f}%)"
+    )
+
     # Summary statistics
     summary_stats = {
         "n_train": valuator.n_train,
@@ -343,6 +374,16 @@ def run_data_valuation(
         "harmful_ci_upper": neg_ci_upper,
         "beneficial_ci_lower": pos_ci_lower,
         "beneficial_ci_upper": pos_ci_upper,
+        "n_reliable_harmful": n_reliable_negative,
+        "n_reliable_beneficial": n_reliable_positive,
+        "n_uncertain": n_uncertain,
+        "pct_reliable_harmful": 100 * n_reliable_negative / valuator.n_train,
+        "pct_reliable_beneficial": 100 * n_reliable_positive / valuator.n_train,
+        "pct_uncertain": 100 * n_uncertain / valuator.n_train,
+        "reliable_harmful_ci_lower": reliable_neg_ci_lower,
+        "reliable_harmful_ci_upper": reliable_neg_ci_upper,
+        "reliable_beneficial_ci_lower": reliable_pos_ci_lower,
+        "reliable_beneficial_ci_upper": reliable_pos_ci_upper,
         "mean_shapley": np.mean(shapley_values),
         "std_shapley": np.std(shapley_values),
         "min_shapley": np.min(shapley_values),
