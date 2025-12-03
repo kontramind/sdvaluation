@@ -403,6 +403,8 @@ class LGBMDataValuator:
 
         # Setup data using from_data_splits
         # Key: Use synthetic for training, real for validation/test
+        # NOTE: Use one_hot=True so OpenDataVal recognizes binary classification (2 classes)
+        # even though our labels are already 0/1 integers
         fetcher = DataFetcher.from_data_splits(
             x_train=X_train_np,
             y_train=y_train_np,
@@ -410,7 +412,7 @@ class LGBMDataValuator:
             y_valid=y_test_np,
             x_test=X_test_np,   # Same for test
             y_test=y_test_np,
-            one_hot=False,  # Data is already encoded, no need for one-hot
+            one_hot=True,  # Necessary for proper binary classification detection
         )
 
         # Prepare LightGBM parameters for OpenDataVal
