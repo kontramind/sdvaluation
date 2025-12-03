@@ -31,6 +31,10 @@ class LGBMDataValuator:
     Computes the Shapley value for each training data point based on its
     marginal contribution to the model's ROC-AUC score on a test set.
 
+    Supports two backends:
+        - "custom": Truncated Monte Carlo Shapley with uncertainty quantification
+        - "opendataval": OpenDataVal library implementation (no CI in Phase 1)
+
     Attributes:
         X_train: Training features
         y_train: Training labels
@@ -39,6 +43,7 @@ class LGBMDataValuator:
         lgbm_params: LightGBM hyperparameters
         random_state: Random seed for reproducibility
         X_train_original: Original training features (before encoding) for output
+        backend: Shapley computation backend ("custom" or "opendataval")
         n_train: Number of training samples
         shapley_values: Computed Shapley values for each training point
         shapley_std: Standard deviation of Shapley estimates
@@ -56,6 +61,7 @@ class LGBMDataValuator:
         lgbm_params: Optional[Dict[str, Any]] = None,
         random_state: int = 42,
         X_train_original: Optional[pd.DataFrame] = None,
+        backend: str = "custom",
     ):
         """
         Initialize the LGBMDataValuator.
@@ -68,7 +74,30 @@ class LGBMDataValuator:
             lgbm_params: Dictionary of LightGBM parameters
             random_state: Random seed for reproducibility
             X_train_original: Original training features before encoding (for output)
+            backend: Shapley computation backend ("custom" or "opendataval")
+
+        Raises:
+            ValueError: If backend is not "custom" or "opendataval"
+            ImportError: If backend is "opendataval" but opendataval is not installed
         """
+        if backend not in ["custom", "opendataval"]:
+            raise ValueError(
+                f"backend must be 'custom' or 'opendataval', got '{backend}'"
+            )
+
+        self.backend = backend
+
+        # Check opendataval availability if needed
+        if backend == "opendataval":
+            try:
+                import opendataval
+                self._has_opendataval = True
+            except ImportError:
+                raise ImportError(
+                    "opendataval is required for backend='opendataval'. "
+                    "Install with: pip install opendataval"
+                )
+
         self.X_train = X_train
         self.y_train = y_train
         self.X_test = X_test
@@ -168,13 +197,51 @@ class LGBMDataValuator:
         show_progress: bool = True,
     ) -> np.ndarray:
         """
-        Compute Data Shapley values using Truncated Monte Carlo algorithm.
+        Compute Data Shapley values using selected backend.
+
+        Dispatches to either custom TMCS implementation or OpenDataVal library
+        based on the backend parameter set during initialization.
+
+        Args:
+            num_samples: Number of random permutations to sample
+            max_coalition_size: Maximum coalition size to evaluate (None = all)
+            show_progress: Whether to show progress bar
+
+        Returns:
+            Array of Shapley values for each training point
+
+        Note:
+            - "custom" backend provides uncertainty quantification (CI)
+            - "opendataval" backend does not provide CI in Phase 1
+        """
+        if self.backend == "custom":
+            return self._compute_shapley_custom(
+                num_samples=num_samples,
+                max_coalition_size=max_coalition_size,
+                show_progress=show_progress,
+            )
+        elif self.backend == "opendataval":
+            return self._compute_shapley_opendataval(
+                num_samples=num_samples,
+                show_progress=show_progress,
+            )
+        else:
+            raise ValueError(f"Unknown backend: {self.backend}")
+
+    def _compute_shapley_custom(
+        self,
+        num_samples: int = 100,
+        max_coalition_size: Optional[int] = None,
+        show_progress: bool = True,
+    ) -> np.ndarray:
+        """
+        Compute Data Shapley values using custom Truncated Monte Carlo algorithm.
 
         The algorithm:
         1. For each permutation (num_samples times):
            - Generate random permutation of training indices
            - For each position in permutation:
-             - Compute marginal contribution: V(S * {i}) - V(S)
+             - Compute marginal contribution: V(S ∪ {i}) - V(S)
              where S is the coalition before adding point i
         2. Average contributions across all permutations
 
@@ -286,6 +353,117 @@ class LGBMDataValuator:
 
         return self.shapley_values
 
+    def _compute_shapley_opendataval(
+        self,
+        num_samples: int = 100,
+        show_progress: bool = True,
+    ) -> np.ndarray:
+        """
+        Compute Data Shapley values using OpenDataVal library.
+
+        This implementation uses OpenDataVal's DataShapley algorithm.
+        Note: Phase 1 does not include confidence intervals.
+
+        Args:
+            num_samples: Number of random permutations to sample
+            show_progress: Whether to show progress bar (limited support in OpenDataVal)
+
+        Returns:
+            Array of Shapley values for each training point
+
+        Note:
+            The max_coalition_size parameter is not supported by OpenDataVal's
+            basic DataShapley implementation and is ignored.
+        """
+        from opendataval.dataloader import DataFetcher
+        from opendataval.model import ClassifierSkLearnWrapper
+        from opendataval.dataval import DataShapley
+
+        if show_progress:
+            console.print("\n[bold]Computing Shapley values using OpenDataVal...[/bold]")
+            console.print(f"  Backend: opendataval")
+            console.print(f"  Training samples: {self.n_train:,}")
+            console.print(f"  Monte Carlo samples: {num_samples}")
+
+        # Convert pandas DataFrames to numpy arrays for OpenDataVal
+        X_train_np = self.X_train.values
+        y_train_np = self.y_train.values
+        X_test_np = self.X_test.values
+        y_test_np = self.y_test.values
+
+        # Setup data using from_data_splits
+        # Key: Use synthetic for training, real for validation/test
+        fetcher = DataFetcher.from_data_splits(
+            x_train=X_train_np,
+            y_train=y_train_np,
+            x_valid=X_test_np,  # Use real test data for validation
+            y_valid=y_test_np,
+            x_test=X_test_np,   # Same for test
+            y_test=y_test_np,
+        )
+
+        # Prepare LightGBM parameters
+        lgbm_params_copy = self.lgbm_params.copy()
+
+        # Create LightGBM model with parameters
+        lgbm = LGBMClassifier(
+            **lgbm_params_copy,
+            random_state=self.random_state,
+            n_jobs=-1,
+            verbose=-1,
+        )
+
+        # Wrap model for OpenDataVal
+        wrapped_model = ClassifierSkLearnWrapper(
+            model=lgbm,
+            num_classes=2,  # Binary classification
+        )
+
+        if show_progress:
+            console.print("\n[cyan]Running DataShapley algorithm...[/cyan]")
+            console.print("[yellow]Note: This may take some time...[/yellow]")
+
+        # Initialize and train DataShapley evaluator
+        shap_evaluator = DataShapley(num_rand_samp=num_samples)
+
+        shap_evaluator.train(
+            fetcher=fetcher,
+            pred_model=wrapped_model,
+            metric=roc_auc_score,
+        )
+
+        # Extract Shapley values
+        shapley_values = shap_evaluator.evaluate_data_values()
+
+        # Store values (no uncertainty metrics in Phase 1 for opendataval)
+        self.shapley_values = shapley_values
+        self.shapley_std = None  # Not computed in Phase 1
+        self.shapley_se = None   # Not computed in Phase 1
+        self.shapley_ci_lower = None  # Not computed in Phase 1
+        self.shapley_ci_upper = None  # Not computed in Phase 1
+
+        # Print summary statistics
+        if show_progress:
+            console.print("\n[bold green]Shapley Value Computation Complete[/bold green]")
+            console.print(f"\n[bold]Summary Statistics:[/bold]")
+            console.print(f"  Mean Shapley value: {np.mean(shapley_values):.6f}")
+            console.print(f"  Std Shapley value:  {np.std(shapley_values):.6f}")
+            console.print(f"  Min Shapley value:  {np.min(shapley_values):.6f}")
+            console.print(f"  Max Shapley value:  {np.max(shapley_values):.6f}")
+
+            # Count harmful vs beneficial points
+            n_harmful = np.sum(shapley_values < 0)
+            n_beneficial = np.sum(shapley_values > 0)
+            console.print(f"\n[bold]Value Distribution:[/bold]")
+            console.print(f"  Harmful points (SV < 0):    {n_harmful:,} "
+                         f"({100 * n_harmful / self.n_train:.1f}%)")
+            console.print(f"  Beneficial points (SV > 0): {n_beneficial:,} "
+                         f"({100 * n_beneficial / self.n_train:.1f}%)")
+            console.print("\n[yellow]Note: Uncertainty metrics (CI) not available "
+                         "with opendataval backend in Phase 1[/yellow]")
+
+        return self.shapley_values
+
     def save_results(
         self,
         output_path: Path,
@@ -324,10 +502,16 @@ class LGBMDataValuator:
 
         # Add Shapley metrics
         results["shapley_value"] = self.shapley_values
-        results["shapley_std"] = self.shapley_std
-        results["shapley_se"] = self.shapley_se
-        results["shapley_ci_lower"] = self.shapley_ci_lower
-        results["shapley_ci_upper"] = self.shapley_ci_upper
+
+        # Add uncertainty metrics only if available (custom backend)
+        if self.shapley_std is not None:
+            results["shapley_std"] = self.shapley_std
+        if self.shapley_se is not None:
+            results["shapley_se"] = self.shapley_se
+        if self.shapley_ci_lower is not None:
+            results["shapley_ci_lower"] = self.shapley_ci_lower
+        if self.shapley_ci_upper is not None:
+            results["shapley_ci_upper"] = self.shapley_ci_upper
 
         # Add sample index (matching sdpype)
         results["sample_index"] = range(self.n_train)

@@ -67,6 +67,7 @@ def run_data_valuation(
     lgbm_params: Optional[Dict[str, Any]] = None,
     encoding_config: Optional[Path] = None,
     include_features: bool = True,
+    backend: str = "custom",
 ) -> Dict[str, Any]:
     """
     Run complete Data Shapley valuation workflow.
@@ -90,6 +91,7 @@ def run_data_valuation(
         lgbm_params: LightGBM hyperparameters
         encoding_config: Path to RDT encoding config YAML (None = use LabelEncoder)
         include_features: Whether to include original features in output CSV
+        backend: Shapley computation backend ("custom" or "opendataval")
 
     Returns:
         Dictionary containing:
@@ -256,6 +258,8 @@ def run_data_valuation(
     if lgbm_params:
         console.print(f"  LightGBM parameters: {lgbm_params}")
 
+    console.print(f"  Backend: {backend}")
+
     valuator = LGBMDataValuator(
         X_train=X_train,
         y_train=y_train,
@@ -264,6 +268,7 @@ def run_data_valuation(
         lgbm_params=lgbm_params,
         random_state=random_state,
         X_train_original=X_train_original if include_features else None,
+        backend=backend,
     )
 
     console.print(f"  Valuator created with {valuator.n_train:,} training points")

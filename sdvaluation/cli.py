@@ -95,6 +95,12 @@ def data_valuation_mimic_iii(
         dir_okay=False,
         readable=True,
     ),
+    backend: str = typer.Option(
+        "custom",
+        "-b",
+        "--backend",
+        help="Shapley computation backend: 'custom' (with CI) or 'opendataval' (no CI in Phase 1)",
+    ),
 ) -> None:
     """
     Run Data Shapley valuation on MIMIC-III synthetic data.
@@ -106,12 +112,19 @@ def data_valuation_mimic_iii(
 
     Examples:
 
-        Basic usage with default settings:
+        Basic usage with default settings (custom backend):
 
             $ sdvaluation shapley \\
                 -t data/synthetic_train.csv \\
                 -e data/real_test.csv \\
                 -c IS_READMISSION_30D
+
+        Using OpenDataVal backend:
+
+            $ sdvaluation shapley \\
+                -t data/synthetic_train.csv \\
+                -e data/real_test.csv \\
+                --backend opendataval
 
         Fast valuation with early truncation:
 
@@ -165,6 +178,7 @@ def data_valuation_mimic_iii(
             output_dir=output_dir,
             include_features=include_features,
             lgbm_params=lgbm_params,
+            backend=backend,
         )
 
         console.print(

@@ -23,6 +23,7 @@ dependencies = [
     "typer[all]>=0.9.0",
     "rdt>=1.0.0",
     "pyyaml>=6.0",
+    "opendataval>=2.0.0",
 ]
 
 [project.scripts]
