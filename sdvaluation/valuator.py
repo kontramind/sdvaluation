@@ -272,8 +272,9 @@ class LGBMDataValuator:
                 # Generate random seeds for reproducibility
                 random_seeds = [self.random_state + i for i in range(num_samples)]
 
-                # Run permutations in parallel
-                results = Parallel(n_jobs=n_jobs, backend="loky")(
+                # Run permutations in parallel with verbose progress
+                # verbose=10 shows progress as each permutation completes
+                results = Parallel(n_jobs=n_jobs, backend="loky", verbose=10 if show_progress else 0)(
                     delayed(self._compute_single_permutation)(
                         i, random_seeds[i], max_coalition_size
                     )
