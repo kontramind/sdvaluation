@@ -67,6 +67,7 @@ def run_data_valuation(
     lgbm_params: Optional[Dict[str, Any]] = None,
     encoding_config: Optional[Path] = None,
     include_features: bool = True,
+    n_jobs: int = 1,
 ) -> Dict[str, Any]:
     """
     Run complete Data Shapley valuation workflow.
@@ -90,6 +91,7 @@ def run_data_valuation(
         lgbm_params: LightGBM hyperparameters
         encoding_config: Path to RDT encoding config YAML (None = use LabelEncoder)
         include_features: Whether to include original features in output CSV
+        n_jobs: Number of parallel jobs (1=sequential, -1=all CPUs)
 
     Returns:
         Dictionary containing:
@@ -282,6 +284,7 @@ def run_data_valuation(
         num_samples=num_samples,
         max_coalition_size=max_coalition_size,
         show_progress=True,
+        n_jobs=n_jobs,
     )
 
     # ====================================================================
