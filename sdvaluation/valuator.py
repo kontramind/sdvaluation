@@ -276,19 +276,15 @@ class LGBMDataValuator:
                 # Generate random seeds for reproducibility
                 random_seeds = [self.random_state + i for i in range(num_samples)]
 
-                # Use loky backend for true multiprocessing parallelism
-                # Each process runs on a separate CPU core
+                # Use multiprocessing backend for true multi-core parallelism
+                # Uses standard library multiprocessing (more stable than loky)
                 import time
                 start_time = time.time()
 
-                # Use batch_size to control how jobs are dispatched
-                # This can help with progress updates and stability
                 results = Parallel(
                     n_jobs=n_jobs,
-                    backend="loky",
-                    verbose=11,  # verbose=11 prints after each task completes
-                    batch_size=1,  # Process one permutation at a time for better progress
-                    timeout=None,
+                    backend="multiprocessing",
+                    verbose=10,  # Print progress updates
                 )(
                     delayed(self._compute_single_permutation)(
                         i, random_seeds[i], max_coalition_size
