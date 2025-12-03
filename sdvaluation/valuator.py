@@ -416,7 +416,7 @@ class LGBMDataValuator:
 
         # Wrap model for OpenDataVal
         wrapped_model = ClassifierSkLearnWrapper(
-            model=lgbm,
+            base_model=lgbm,
             num_classes=2,  # Binary classification
         )
 
