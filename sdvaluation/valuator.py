@@ -421,11 +421,11 @@ class LGBMDataValuator:
             'verbose': -1,
         })
 
-        # Wrap model for OpenDataVal (pass class, not instance)
-        # Note: Use num_classes=1 for binary without one-hot encoding
+        # Wrap model for OpenDataVal using fetcher.label_dim[0] for num_classes
+        # This automatically detects the correct number of classes from the data
         wrapped_model = ClassifierSkLearnWrapper(
             base_model=LGBMClassifier,  # Pass the class
-            num_classes=1,  # Binary without one-hot (avoids shape issues)
+            num_classes=fetcher.label_dim[0],  # Use fetcher's label dimension
             **lgbm_params_copy,  # Pass parameters to wrapper
         )
 
