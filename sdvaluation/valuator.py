@@ -267,19 +267,47 @@ class LGBMDataValuator:
                         f"Computing Shapley values (N={self.n_train}, "
                         f"samples={num_samples}, max_coalition={max_coalition_size})..."
                     )
+                    console.print(
+                        f"[dim]Note: Progress updates show after each permutation completes "
+                        f"(~{max_coalition_size} models per permutation)[/dim]"
+                    )
+                    import sys
+                    sys.stdout.flush()
 
                 # Parallel execution: each permutation runs independently
                 # Generate random seeds for reproducibility
                 random_seeds = [self.random_state + i for i in range(num_samples)]
 
-                # Run permutations in parallel with verbose progress
-                # verbose=50 prints progress for each completed permutation
-                results = Parallel(n_jobs=n_jobs, backend="loky", verbose=50 if show_progress else 0)(
-                    delayed(self._compute_single_permutation)(
-                        i, random_seeds[i], max_coalition_size
+                # Track progress with manual updates
+                if show_progress:
+                    import time
+                    start_time = time.time()
+                    completed = 0
+
+                    # Use list to collect results and show progress
+                    results = []
+                    for result in Parallel(n_jobs=n_jobs, backend="loky", return_as='generator')(
+                        delayed(self._compute_single_permutation)(
+                            i, random_seeds[i], max_coalition_size
+                        )
+                        for i in range(num_samples)
+                    ):
+                        results.append(result)
+                        completed += 1
+                        elapsed = time.time() - start_time
+                        avg_time = elapsed / completed
+                        remaining = (num_samples - completed) * avg_time
+                        console.print(
+                            f"[cyan]Progress:[/cyan] {completed}/{num_samples} permutations "
+                            f"| Elapsed: {elapsed:.1f}s | Remaining: ~{remaining:.1f}s"
+                        )
+                else:
+                    results = Parallel(n_jobs=n_jobs, backend="loky")(
+                        delayed(self._compute_single_permutation)(
+                            i, random_seeds[i], max_coalition_size
+                        )
+                        for i in range(num_samples)
                     )
-                    for i in range(num_samples)
-                )
 
                 # Aggregate results from all permutations
                 for perm_contributions in results:
