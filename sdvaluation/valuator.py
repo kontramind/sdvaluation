@@ -276,13 +276,20 @@ class LGBMDataValuator:
                 # Generate random seeds for reproducibility
                 random_seeds = [self.random_state + i for i in range(num_samples)]
 
-                # Use threading backend which is more stable than loky
-                # Note: Due to GIL, sklearn/lightgbm release it during training
-                # so we still get parallelism for the model training itself
+                # Use loky backend for true multiprocessing parallelism
+                # Each process runs on a separate CPU core
                 import time
                 start_time = time.time()
 
-                results = Parallel(n_jobs=n_jobs, backend="threading", verbose=10)(
+                # Use batch_size to control how jobs are dispatched
+                # This can help with progress updates and stability
+                results = Parallel(
+                    n_jobs=n_jobs,
+                    backend="loky",
+                    verbose=11,  # verbose=11 prints after each task completes
+                    batch_size=1,  # Process one permutation at a time for better progress
+                    timeout=None,
+                )(
                     delayed(self._compute_single_permutation)(
                         i, random_seeds[i], max_coalition_size
                     )
