@@ -86,6 +86,12 @@ def data_valuation_mimic_iii(
         "--include-features/--no-include-features",
         help="Include feature columns in output CSV",
     ),
+    n_jobs: int = typer.Option(
+        1,
+        "-j",
+        "--n-jobs",
+        help="Number of parallel jobs for computation (1=sequential, -1=all CPUs)",
+    ),
     lgbm_params_json: Optional[Path] = typer.Option(
         None,
         "--lgbm-params-json",
@@ -121,6 +127,14 @@ def data_valuation_mimic_iii(
                 -n 50 \\
                 -m 100 \\
                 -o experiments/quick_valuation
+
+        Parallel execution with 4 CPU cores:
+
+            $ sdvaluation shapley \\
+                -t data/synthetic_train.csv \\
+                -e data/real_test.csv \\
+                -n 20 \\
+                -j 4
 
         Using pre-trained hyperparameters and encoding config:
 
@@ -165,6 +179,7 @@ def data_valuation_mimic_iii(
             output_dir=output_dir,
             include_features=include_features,
             lgbm_params=lgbm_params,
+            n_jobs=n_jobs,
         )
 
         console.print(

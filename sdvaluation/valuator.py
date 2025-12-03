@@ -7,10 +7,11 @@ data point values based on their marginal contribution to model performance.
 
 import warnings
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 import pandas as pd
+from joblib import Parallel, delayed
 from lightgbm import LGBMClassifier
 from rich.console import Console
 from rich.progress import Progress, BarColumn, TextColumn, TimeRemainingColumn
@@ -161,11 +162,65 @@ class LGBMDataValuator:
             # Silently return 0.0 for failed training
             return 0.0
 
+    def _compute_single_permutation(
+        self,
+        perm_idx: int,
+        random_seed: int,
+        max_coalition_size: int,
+    ) -> List[List[float]]:
+        """
+        Compute contributions for a single permutation.
+
+        This method is designed to be run in parallel - each permutation
+        is completely independent.
+
+        Args:
+            perm_idx: Index of this permutation (for logging/debugging)
+            random_seed: Random seed for this permutation
+            max_coalition_size: Maximum coalition size to evaluate
+
+        Returns:
+            List of contribution lists, one per training point.
+            contributions[i] contains all marginal contributions for point i.
+        """
+        # Set seed for reproducibility
+        np.random.seed(random_seed)
+
+        # Generate random permutation
+        permutation = np.random.permutation(self.n_train)
+
+        # Track contributions for each point
+        contributions = [[] for _ in range(self.n_train)]
+
+        # Previous coalition performance
+        prev_performance = 0.0
+
+        # Evaluate contributions along the permutation
+        for coalition_size in range(1, max_coalition_size + 1):
+            # Current coalition
+            coalition = permutation[:coalition_size]
+
+            # Evaluate coalition performance
+            current_performance = self._train_and_evaluate(coalition)
+
+            # Marginal contribution of the last added point
+            added_point = permutation[coalition_size - 1]
+            marginal_contribution = current_performance - prev_performance
+
+            # Record contribution
+            contributions[added_point].append(marginal_contribution)
+
+            # Update for next iteration
+            prev_performance = current_performance
+
+        return contributions
+
     def compute_shapley_values(
         self,
         num_samples: int = 100,
         max_coalition_size: Optional[int] = None,
         show_progress: bool = True,
+        n_jobs: int = 1,
     ) -> np.ndarray:
         """
         Compute Data Shapley values using Truncated Monte Carlo algorithm.
@@ -182,6 +237,9 @@ class LGBMDataValuator:
             num_samples: Number of random permutations to sample
             max_coalition_size: Maximum coalition size to evaluate (None = all)
             show_progress: Whether to show progress bar
+            n_jobs: Number of parallel jobs. 1 = sequential (default),
+                   -1 = use all CPUs, >1 = specific number of CPUs.
+                   Falls back to sequential if parallelization fails.
 
         Returns:
             Array of Shapley values for each training point
@@ -196,51 +254,99 @@ class LGBMDataValuator:
 
         total_iterations = num_samples * max_coalition_size
 
-        if show_progress:
-            progress = Progress(
-                TextColumn("[progress.description]{task.description}"),
-                BarColumn(),
-                TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
-                TimeRemainingColumn(),
-            )
-            task = progress.add_task(
-                f"Computing Shapley values (N={self.n_train}, "
-                f"samples={num_samples}, max_coalition={max_coalition_size})...",
-                total=total_iterations,
-            )
-            progress.start()
+        # Determine whether to use parallel execution
+        use_parallel = n_jobs != 1 and num_samples > 1
 
-        # Monte Carlo sampling
-        for sample_idx in range(num_samples):
-            # Generate random permutation
-            permutation = np.random.permutation(self.n_train)
+        if use_parallel:
+            try:
+                if show_progress:
+                    console.print(
+                        f"[bold cyan]Using parallel execution with n_jobs={n_jobs}[/bold cyan]"
+                    )
+                    console.print(
+                        f"Computing Shapley values (N={self.n_train}, "
+                        f"samples={num_samples}, max_coalition={max_coalition_size})..."
+                    )
 
-            # Previous coalition performance
-            prev_performance = 0.0
+                # Parallel execution: each permutation runs independently
+                # Generate random seeds for reproducibility
+                random_seeds = [self.random_state + i for i in range(num_samples)]
 
-            # Evaluate contributions along the permutation
-            for coalition_size in range(1, max_coalition_size + 1):
-                # Current coalition
-                coalition = permutation[:coalition_size]
+                # Run permutations in parallel
+                results = Parallel(n_jobs=n_jobs, backend="loky")(
+                    delayed(self._compute_single_permutation)(
+                        i, random_seeds[i], max_coalition_size
+                    )
+                    for i in range(num_samples)
+                )
 
-                # Evaluate coalition performance
-                current_performance = self._train_and_evaluate(coalition)
-
-                # Marginal contribution of the last added point
-                added_point = permutation[coalition_size - 1]
-                marginal_contribution = current_performance - prev_performance
-
-                # Record contribution
-                contributions_per_point[added_point].append(marginal_contribution)
-
-                # Update for next iteration
-                prev_performance = current_performance
+                # Aggregate results from all permutations
+                for perm_contributions in results:
+                    for point_idx in range(self.n_train):
+                        contributions_per_point[point_idx].extend(
+                            perm_contributions[point_idx]
+                        )
 
                 if show_progress:
-                    progress.update(task, advance=1)
+                    console.print(
+                        f"[bold green]✓[/bold green] Completed {total_iterations:,} model trainings"
+                    )
 
-        if show_progress:
-            progress.stop()
+            except Exception as e:
+                # Fallback to sequential execution
+                console.print(
+                    f"[bold yellow]Warning:[/bold yellow] Parallel execution failed: {e}"
+                )
+                console.print("[bold yellow]Falling back to sequential execution...[/bold yellow]")
+                use_parallel = False
+
+        if not use_parallel:
+            # Sequential execution with progress bar
+            if show_progress:
+                progress = Progress(
+                    TextColumn("[progress.description]{task.description}"),
+                    BarColumn(),
+                    TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+                    TimeRemainingColumn(),
+                )
+                task = progress.add_task(
+                    f"Computing Shapley values (N={self.n_train}, "
+                    f"samples={num_samples}, max_coalition={max_coalition_size})...",
+                    total=total_iterations,
+                )
+                progress.start()
+
+            # Monte Carlo sampling
+            for sample_idx in range(num_samples):
+                # Generate random permutation
+                permutation = np.random.permutation(self.n_train)
+
+                # Previous coalition performance
+                prev_performance = 0.0
+
+                # Evaluate contributions along the permutation
+                for coalition_size in range(1, max_coalition_size + 1):
+                    # Current coalition
+                    coalition = permutation[:coalition_size]
+
+                    # Evaluate coalition performance
+                    current_performance = self._train_and_evaluate(coalition)
+
+                    # Marginal contribution of the last added point
+                    added_point = permutation[coalition_size - 1]
+                    marginal_contribution = current_performance - prev_performance
+
+                    # Record contribution
+                    contributions_per_point[added_point].append(marginal_contribution)
+
+                    # Update for next iteration
+                    prev_performance = current_performance
+
+                    if show_progress:
+                        progress.update(task, advance=1)
+
+            if show_progress:
+                progress.stop()
 
         # Compute Shapley values and uncertainty metrics
         self.shapley_values = np.array(
