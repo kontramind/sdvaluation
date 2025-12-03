@@ -422,9 +422,9 @@ class LGBMDataValuator:
         })
 
         # Wrap model for OpenDataVal (pass class, not instance)
+        # Note: Don't pass num_classes to avoid internal one-hot encoding issues
         wrapped_model = ClassifierSkLearnWrapper(
             base_model=LGBMClassifier,  # Pass the class
-            num_classes=2,  # Binary classification
             **lgbm_params_copy,  # Pass parameters to wrapper
         )
 
