@@ -300,27 +300,20 @@ class LGBMDataValuator:
                 random_seeds = [self.random_state + i for i in range(num_samples)]
 
                 # Use multiprocessing backend for true multi-core parallelism
-                # Uses standard library multiprocessing (more stable than loky)
+                # Uses standard library multiprocessing (stable and fast)
                 import time
-                from tqdm import tqdm
                 start_time = time.time()
 
-                # Use tqdm for real-time progress bar
-                with tqdm(total=num_samples, desc="Permutations", unit="perm",
-                         bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]') as pbar:
-                    results = []
-                    for result in Parallel(
-                        n_jobs=n_jobs,
-                        backend="multiprocessing",
-                        return_as='generator',
-                    )(
-                        delayed(self._compute_single_permutation)(
-                            i, random_seeds[i], max_coalition_size, lgbm_threads
-                        )
-                        for i in range(num_samples)
-                    ):
-                        results.append(result)
-                        pbar.update(1)
+                results = Parallel(
+                    n_jobs=n_jobs,
+                    backend="multiprocessing",
+                    verbose=10,  # Print progress updates
+                )(
+                    delayed(self._compute_single_permutation)(
+                        i, random_seeds[i], max_coalition_size, lgbm_threads
+                    )
+                    for i in range(num_samples)
+                )
 
                 elapsed = time.time() - start_time
 
