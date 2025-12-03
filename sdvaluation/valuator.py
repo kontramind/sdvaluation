@@ -427,13 +427,13 @@ class LGBMDataValuator:
         if show_progress:
             console.print(f"\n[yellow]Debug - Fetcher info:[/yellow]")
             console.print(f"  fetcher.label_dim: {fetcher.label_dim}")
-            console.print(f"  fetcher.label_dim[0]: {fetcher.label_dim[0]}")
+            console.print(f"  Number of unique classes in y_train: {len(np.unique(y_train_np))}")
 
-        # Wrap model for OpenDataVal using fetcher.label_dim[0] for num_classes
-        # This automatically detects the correct number of classes from the data
+        # Wrap model for OpenDataVal
+        # Hardcode num_classes=2 for binary classification since fetcher doesn't detect it correctly
         wrapped_model = ClassifierSkLearnWrapper(
             base_model=LGBMClassifier,  # Pass the class
-            num_classes=fetcher.label_dim[0],  # Use fetcher's label dimension
+            num_classes=2,  # Binary classification
             **lgbm_params_copy,  # Pass parameters to wrapper
         )
 
