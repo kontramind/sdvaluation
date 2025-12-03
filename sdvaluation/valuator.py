@@ -403,8 +403,7 @@ class LGBMDataValuator:
 
         # Setup data using from_data_splits
         # Key: Use synthetic for training, real for validation/test
-        # NOTE: Use one_hot=True so OpenDataVal recognizes binary classification (2 classes)
-        # even though our labels are already 0/1 integers
+        # NOTE: Use one_hot=False because LightGBM expects 1D labels (not one-hot encoded)
         fetcher = DataFetcher.from_data_splits(
             x_train=X_train_np,
             y_train=y_train_np,
@@ -412,7 +411,7 @@ class LGBMDataValuator:
             y_valid=y_test_np,
             x_test=X_test_np,   # Same for test
             y_test=y_test_np,
-            one_hot=True,  # Necessary for proper binary classification detection
+            one_hot=False,  # Keep labels as 1D for sklearn-compatible models
         )
 
         # Prepare LightGBM parameters for OpenDataVal
@@ -423,17 +422,19 @@ class LGBMDataValuator:
             'verbose': -1,
         })
 
-        # Debug: Check fetcher.label_dim
+        # Debug: Check fetcher.label_dim with one_hot=False
         if show_progress:
-            console.print(f"\n[yellow]Debug - Fetcher info:[/yellow]")
+            console.print(f"\n[yellow]Debug - Fetcher info (one_hot=False):[/yellow]")
             console.print(f"  fetcher.label_dim: {fetcher.label_dim}")
             console.print(f"  Number of unique classes in y_train: {len(np.unique(y_train_np))}")
+            console.print(f"  Using num_classes: {len(np.unique(y_train_np))}")
 
         # Wrap model for OpenDataVal
-        # Hardcode num_classes=2 for binary classification since fetcher doesn't detect it correctly
+        # For binary classification, num_classes should be 2
+        num_classes = len(np.unique(y_train_np))
         wrapped_model = ClassifierSkLearnWrapper(
             base_model=LGBMClassifier,  # Pass the class
-            num_classes=2,  # Binary classification
+            num_classes=num_classes,  # Detect from unique labels
             **lgbm_params_copy,  # Pass parameters to wrapper
         )
 
