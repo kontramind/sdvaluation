@@ -387,9 +387,9 @@ class LGBMDataValuator:
 
         # Convert pandas DataFrames to numpy arrays for OpenDataVal
         X_train_np = self.X_train.values
-        y_train_np = self.y_train.values.ravel()  # Ensure 1D array
+        y_train_np = self.y_train.to_numpy().astype(int).reshape(-1)  # Ensure 1D integer array
         X_test_np = self.X_test.values
-        y_test_np = self.y_test.values.ravel()  # Ensure 1D array
+        y_test_np = self.y_test.to_numpy().astype(int).reshape(-1)  # Ensure 1D integer array
 
         # Setup data using from_data_splits
         # Key: Use synthetic for training, real for validation/test
