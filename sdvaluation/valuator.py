@@ -400,6 +400,7 @@ class LGBMDataValuator:
             y_valid=y_test_np,
             x_test=X_test_np,   # Same for test
             y_test=y_test_np,
+            one_hot=False,  # Data is already encoded, no need for one-hot
         )
 
         # Prepare LightGBM parameters
