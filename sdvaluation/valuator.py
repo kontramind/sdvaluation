@@ -421,6 +421,12 @@ class LGBMDataValuator:
             'verbose': -1,
         })
 
+        # Debug: Check fetcher.label_dim
+        if show_progress:
+            console.print(f"\n[yellow]Debug - Fetcher info:[/yellow]")
+            console.print(f"  fetcher.label_dim: {fetcher.label_dim}")
+            console.print(f"  fetcher.label_dim[0]: {fetcher.label_dim[0]}")
+
         # Wrap model for OpenDataVal using fetcher.label_dim[0] for num_classes
         # This automatically detects the correct number of classes from the data
         wrapped_model = ClassifierSkLearnWrapper(
