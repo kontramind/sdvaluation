@@ -268,46 +268,28 @@ class LGBMDataValuator:
                         f"samples={num_samples}, max_coalition={max_coalition_size})..."
                     )
                     console.print(
-                        f"[dim]Note: Progress updates show after each permutation completes "
-                        f"(~{max_coalition_size} models per permutation)[/dim]"
+                        f"[dim]Training {num_samples * max_coalition_size:,} models total. "
+                        f"This may take several minutes...[/dim]"
                     )
-                    import sys
-                    sys.stdout.flush()
 
                 # Parallel execution: each permutation runs independently
                 # Generate random seeds for reproducibility
                 random_seeds = [self.random_state + i for i in range(num_samples)]
 
-                # Track progress with manual updates
-                if show_progress:
-                    import time
-                    start_time = time.time()
-                    completed = 0
+                # Use threading backend which is more stable than loky
+                # Note: Due to GIL, sklearn/lightgbm release it during training
+                # so we still get parallelism for the model training itself
+                import time
+                start_time = time.time()
 
-                    # Use list to collect results and show progress
-                    results = []
-                    for result in Parallel(n_jobs=n_jobs, backend="loky", return_as='generator')(
-                        delayed(self._compute_single_permutation)(
-                            i, random_seeds[i], max_coalition_size
-                        )
-                        for i in range(num_samples)
-                    ):
-                        results.append(result)
-                        completed += 1
-                        elapsed = time.time() - start_time
-                        avg_time = elapsed / completed
-                        remaining = (num_samples - completed) * avg_time
-                        console.print(
-                            f"[cyan]Progress:[/cyan] {completed}/{num_samples} permutations "
-                            f"| Elapsed: {elapsed:.1f}s | Remaining: ~{remaining:.1f}s"
-                        )
-                else:
-                    results = Parallel(n_jobs=n_jobs, backend="loky")(
-                        delayed(self._compute_single_permutation)(
-                            i, random_seeds[i], max_coalition_size
-                        )
-                        for i in range(num_samples)
+                results = Parallel(n_jobs=n_jobs, backend="threading", verbose=10)(
+                    delayed(self._compute_single_permutation)(
+                        i, random_seeds[i], max_coalition_size
                     )
+                    for i in range(num_samples)
+                )
+
+                elapsed = time.time() - start_time
 
                 # Aggregate results from all permutations
                 for perm_contributions in results:
@@ -318,7 +300,8 @@ class LGBMDataValuator:
 
                 if show_progress:
                     console.print(
-                        f"[bold green]✓[/bold green] Completed {total_iterations:,} model trainings"
+                        f"[bold green]✓[/bold green] Completed {total_iterations:,} model trainings "
+                        f"in {elapsed:.1f}s"
                     )
 
             except Exception as e:
