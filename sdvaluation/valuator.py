@@ -115,12 +115,13 @@ class LGBMDataValuator:
 
         return processed
 
-    def _train_and_evaluate(self, indices: np.ndarray) -> float:
+    def _train_and_evaluate(self, indices: np.ndarray, num_threads: int = 0) -> float:
         """
         Train LightGBM on a subset of training data and evaluate on test set.
 
         Args:
             indices: Array of indices to use from training data
+            num_threads: Number of threads for LightGBM (0 = use default)
 
         Returns:
             ROC-AUC score on test set. Returns 0.0 if training fails or
@@ -139,6 +140,10 @@ class LGBMDataValuator:
         try:
             # Prepare parameters for this subset
             params = self.lgbm_params.copy()
+
+            # Set num_threads if specified (for parallel coordination)
+            if num_threads > 0:
+                params["num_threads"] = num_threads
 
             # Compute scale_pos_weight if imbalance method was set
             if "class_weight" not in params:
@@ -167,6 +172,7 @@ class LGBMDataValuator:
         perm_idx: int,
         random_seed: int,
         max_coalition_size: int,
+        num_threads: int = 0,
     ) -> List[List[float]]:
         """
         Compute contributions for a single permutation.
@@ -178,6 +184,7 @@ class LGBMDataValuator:
             perm_idx: Index of this permutation (for logging/debugging)
             random_seed: Random seed for this permutation
             max_coalition_size: Maximum coalition size to evaluate
+            num_threads: Number of threads for LightGBM (0 = use default)
 
         Returns:
             List of contribution lists, one per training point.
@@ -201,7 +208,7 @@ class LGBMDataValuator:
             coalition = permutation[:coalition_size]
 
             # Evaluate coalition performance
-            current_performance = self._train_and_evaluate(coalition)
+            current_performance = self._train_and_evaluate(coalition, num_threads)
 
             # Marginal contribution of the last added point
             added_point = permutation[coalition_size - 1]
@@ -257,11 +264,27 @@ class LGBMDataValuator:
         # Determine whether to use parallel execution
         use_parallel = n_jobs != 1 and num_samples > 1
 
+        # Calculate optimal num_threads for LightGBM based on n_jobs
+        import os
+        total_cpus = os.cpu_count() or 1
+
+        if use_parallel:
+            # Divide threads among parallel jobs to avoid oversubscription
+            effective_n_jobs = total_cpus if n_jobs == -1 else min(n_jobs, total_cpus)
+            lgbm_threads = max(1, total_cpus // effective_n_jobs)
+        else:
+            # Sequential: let LightGBM use all cores
+            lgbm_threads = total_cpus
+
         if use_parallel:
             try:
                 if show_progress:
                     console.print(
                         f"[bold cyan]Using parallel execution with n_jobs={n_jobs}[/bold cyan]"
+                    )
+                    console.print(
+                        f"[cyan]LightGBM threads per job: {lgbm_threads} "
+                        f"(total CPUs: {total_cpus})[/cyan]"
                     )
                     console.print(
                         f"Computing Shapley values (N={self.n_train}, "
@@ -276,22 +299,18 @@ class LGBMDataValuator:
                 # Generate random seeds for reproducibility
                 random_seeds = [self.random_state + i for i in range(num_samples)]
 
-                # Use loky backend for true multiprocessing parallelism
-                # Each process runs on a separate CPU core
+                # Use multiprocessing backend for true multi-core parallelism
+                # Uses standard library multiprocessing (more stable than loky)
                 import time
                 start_time = time.time()
 
-                # Use batch_size to control how jobs are dispatched
-                # This can help with progress updates and stability
                 results = Parallel(
                     n_jobs=n_jobs,
-                    backend="loky",
-                    verbose=11,  # verbose=11 prints after each task completes
-                    batch_size=1,  # Process one permutation at a time for better progress
-                    timeout=None,
+                    backend="multiprocessing",
+                    verbose=10,  # Print progress updates
                 )(
                     delayed(self._compute_single_permutation)(
-                        i, random_seeds[i], max_coalition_size
+                        i, random_seeds[i], max_coalition_size, lgbm_threads
                     )
                     for i in range(num_samples)
                 )
@@ -322,6 +341,9 @@ class LGBMDataValuator:
         if not use_parallel:
             # Sequential execution with progress bar
             if show_progress:
+                console.print(
+                    f"[cyan]LightGBM using {lgbm_threads} threads[/cyan]"
+                )
                 progress = Progress(
                     TextColumn("[progress.description]{task.description}"),
                     BarColumn(),
@@ -349,7 +371,7 @@ class LGBMDataValuator:
                     coalition = permutation[:coalition_size]
 
                     # Evaluate coalition performance
-                    current_performance = self._train_and_evaluate(coalition)
+                    current_performance = self._train_and_evaluate(coalition, lgbm_threads)
 
                     # Marginal contribution of the last added point
                     added_point = permutation[coalition_size - 1]
