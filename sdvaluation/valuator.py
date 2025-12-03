@@ -403,21 +403,19 @@ class LGBMDataValuator:
             one_hot=False,  # Data is already encoded, no need for one-hot
         )
 
-        # Prepare LightGBM parameters
+        # Prepare LightGBM parameters for OpenDataVal
         lgbm_params_copy = self.lgbm_params.copy()
+        lgbm_params_copy.update({
+            'random_state': self.random_state,
+            'n_jobs': -1,
+            'verbose': -1,
+        })
 
-        # Create LightGBM model with parameters
-        lgbm = LGBMClassifier(
-            **lgbm_params_copy,
-            random_state=self.random_state,
-            n_jobs=-1,
-            verbose=-1,
-        )
-
-        # Wrap model for OpenDataVal
+        # Wrap model for OpenDataVal (pass class, not instance)
         wrapped_model = ClassifierSkLearnWrapper(
-            base_model=lgbm,
+            base_model=LGBMClassifier,  # Pass the class
             num_classes=2,  # Binary classification
+            **lgbm_params_copy,  # Pass parameters to wrapper
         )
 
         if show_progress:
