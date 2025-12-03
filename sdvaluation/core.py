@@ -12,6 +12,7 @@ from typing import Any, Dict, Optional, Tuple
 import numpy as np
 import pandas as pd
 from rich.console import Console
+from rich.panel import Panel
 from scipy import stats
 
 from .encoding import RDTDatasetEncoder, load_encoding_config
@@ -114,9 +115,11 @@ def run_data_valuation(
     if not test_file.exists():
         raise FileNotFoundError(f"Test file not found: {test_file}")
 
-    console.print("\n[bold cyan]PPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPP[/bold cyan]")
-    console.print("[bold cyan]   Data Shapley Valuation for Synthetic Data[/bold cyan]")
-    console.print("[bold cyan]PPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPP[/bold cyan]\n")
+    console.print()
+    console.print(Panel(
+        "[bold cyan]Data Shapley Valuation for Synthetic Data[/bold cyan]",
+        expand=False
+    ))
 
     # ====================================================================
     # Step 1: Load Data
@@ -344,9 +347,13 @@ def run_data_valuation(
         "mean_uncertainty": np.mean(valuator.shapley_se),
     }
 
-    console.print("\n[bold green]PPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPP[/bold green]")
-    console.print("[bold green]   Data Valuation Complete![/bold green]")
-    console.print("[bold green]PPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPP[/bold green]\n")
+    console.print()
+    console.print(Panel(
+        "[bold green]✓ Data Valuation Complete![/bold green]",
+        expand=False,
+        style="green"
+    ))
+    console.print()
 
     return {
         "valuator": valuator,
