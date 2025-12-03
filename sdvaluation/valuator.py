@@ -16,7 +16,10 @@ from rich.console import Console
 from rich.progress import Progress, BarColumn, TextColumn, TimeRemainingColumn
 from sklearn.metrics import roc_auc_score
 
+# Suppress all warnings
 warnings.filterwarnings("ignore", category=UserWarning)
+warnings.filterwarnings("ignore", category=FutureWarning)
+warnings.filterwarnings("ignore")
 
 console = Console()
 
@@ -145,7 +148,7 @@ class LGBMDataValuator:
                     params["scale_pos_weight"] = n_neg / n_pos
 
             # Train model
-            model = LGBMClassifier(**params, random_state=self.random_state)
+            model = LGBMClassifier(**params, random_state=self.random_state, verbose=-1)
             model.fit(X_subset, y_subset)
 
             # Evaluate on test set
@@ -155,7 +158,7 @@ class LGBMDataValuator:
             return auroc
 
         except Exception as e:
-            console.print(f"[red]Training failed for subset of size {len(indices)}: {str(e)}[/red]")
+            # Silently return 0.0 for failed training
             return 0.0
 
     def compute_shapley_values(
