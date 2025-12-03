@@ -423,7 +423,7 @@ class LGBMDataValuator:
             console.print("[yellow]Note: This may take some time...[/yellow]")
 
         # Initialize and train DataShapley evaluator
-        shap_evaluator = DataShapley(num_rand_samp=num_samples)
+        shap_evaluator = DataShapley(mc_epochs=num_samples)
 
         shap_evaluator.train(
             fetcher=fetcher,
