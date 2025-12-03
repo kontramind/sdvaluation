@@ -273,8 +273,8 @@ class LGBMDataValuator:
                 random_seeds = [self.random_state + i for i in range(num_samples)]
 
                 # Run permutations in parallel with verbose progress
-                # verbose=10 shows progress as each permutation completes
-                results = Parallel(n_jobs=n_jobs, backend="loky", verbose=10 if show_progress else 0)(
+                # verbose=50 prints progress for each completed permutation
+                results = Parallel(n_jobs=n_jobs, backend="loky", verbose=50 if show_progress else 0)(
                     delayed(self._compute_single_permutation)(
                         i, random_seeds[i], max_coalition_size
                     )
