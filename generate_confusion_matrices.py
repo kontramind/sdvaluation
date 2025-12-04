@@ -30,6 +30,7 @@ def load_lgbm_params(params_file: Path) -> dict:
     params.pop("imbalance_method", None)
     params.pop("early_stopping_rounds", None)
     params.pop("optimal_threshold", None)
+    params.pop("test_metrics", None)
 
     return params
 
