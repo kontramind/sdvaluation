@@ -15,7 +15,7 @@ from joblib import Parallel, delayed
 from lightgbm import LGBMClassifier
 from rich.console import Console
 from rich.progress import Progress, BarColumn, TextColumn, TimeRemainingColumn
-from sklearn.metrics import roc_auc_score, log_loss
+from sklearn.metrics import roc_auc_score, log_loss, f1_score, precision_score, recall_score
 
 # Suppress all warnings
 warnings.filterwarnings("ignore", category=UserWarning)
@@ -31,7 +31,7 @@ class LGBMDataValuator:
 
     Computes the Shapley value for each training data point based on its
     marginal contribution to the model's performance on a test set.
-    Supports dual-metric analysis: ROC-AUC and Log-Loss.
+    Supports multi-metric analysis: ROC-AUC, Log-Loss, F1, Precision, and Recall.
 
     Attributes:
         X_train: Training features
@@ -56,6 +56,27 @@ class LGBMDataValuator:
         shapley_se_logloss: Standard error of Log-Loss Shapley estimates
         shapley_ci_lower_logloss: Lower bound of 95% CI (Log-Loss)
         shapley_ci_upper_logloss: Upper bound of 95% CI (Log-Loss)
+
+        F1 Score metrics:
+        shapley_values_f1: Shapley values based on F1 Score
+        shapley_std_f1: Standard deviation of F1 Shapley estimates
+        shapley_se_f1: Standard error of F1 Shapley estimates
+        shapley_ci_lower_f1: Lower bound of 95% CI (F1)
+        shapley_ci_upper_f1: Upper bound of 95% CI (F1)
+
+        Precision metrics:
+        shapley_values_precision: Shapley values based on Precision
+        shapley_std_precision: Standard deviation of Precision Shapley estimates
+        shapley_se_precision: Standard error of Precision Shapley estimates
+        shapley_ci_lower_precision: Lower bound of 95% CI (Precision)
+        shapley_ci_upper_precision: Upper bound of 95% CI (Precision)
+
+        Recall metrics:
+        shapley_values_recall: Shapley values based on Recall
+        shapley_std_recall: Standard deviation of Recall Shapley estimates
+        shapley_se_recall: Standard error of Recall Shapley estimates
+        shapley_ci_lower_recall: Lower bound of 95% CI (Recall)
+        shapley_ci_upper_recall: Upper bound of 95% CI (Recall)
 
         Legacy attributes (for backward compatibility, aliased to ROC-AUC):
         shapley_values: Alias for shapley_values_auroc
@@ -110,6 +131,27 @@ class LGBMDataValuator:
         self.shapley_ci_lower_logloss: Optional[np.ndarray] = None
         self.shapley_ci_upper_logloss: Optional[np.ndarray] = None
 
+        # Results storage - F1 Score metrics
+        self.shapley_values_f1: Optional[np.ndarray] = None
+        self.shapley_std_f1: Optional[np.ndarray] = None
+        self.shapley_se_f1: Optional[np.ndarray] = None
+        self.shapley_ci_lower_f1: Optional[np.ndarray] = None
+        self.shapley_ci_upper_f1: Optional[np.ndarray] = None
+
+        # Results storage - Precision metrics
+        self.shapley_values_precision: Optional[np.ndarray] = None
+        self.shapley_std_precision: Optional[np.ndarray] = None
+        self.shapley_se_precision: Optional[np.ndarray] = None
+        self.shapley_ci_lower_precision: Optional[np.ndarray] = None
+        self.shapley_ci_upper_precision: Optional[np.ndarray] = None
+
+        # Results storage - Recall metrics
+        self.shapley_values_recall: Optional[np.ndarray] = None
+        self.shapley_std_recall: Optional[np.ndarray] = None
+        self.shapley_se_recall: Optional[np.ndarray] = None
+        self.shapley_ci_lower_recall: Optional[np.ndarray] = None
+        self.shapley_ci_upper_recall: Optional[np.ndarray] = None
+
         # Legacy attributes (aliases for backward compatibility)
         self.shapley_values: Optional[np.ndarray] = None
         self.shapley_std: Optional[np.ndarray] = None
@@ -158,18 +200,20 @@ class LGBMDataValuator:
             Dictionary with performance metrics:
                 - 'auroc': ROC-AUC score on test set
                 - 'logloss': Negative log-loss on test set (higher is better)
-            Returns {'auroc': 0.0, 'logloss': 0.0} if training fails or
-            if the subset contains only one class.
+                - 'f1': F1 score at threshold 0.5
+                - 'precision': Precision at threshold 0.5
+                - 'recall': Recall at threshold 0.5
+            Returns all zeros if training fails or if the subset contains only one class.
         """
         if len(indices) == 0:
-            return {"auroc": 0.0, "logloss": 0.0}
+            return {"auroc": 0.0, "logloss": 0.0, "f1": 0.0, "precision": 0.0, "recall": 0.0}
 
         X_subset = self.X_train.iloc[indices]
         y_subset = self.y_train.iloc[indices]
 
         # Check if we have both classes
         if len(np.unique(y_subset)) < 2:
-            return {"auroc": 0.0, "logloss": 0.0}
+            return {"auroc": 0.0, "logloss": 0.0, "f1": 0.0, "precision": 0.0, "recall": 0.0}
 
         try:
             # Prepare parameters for this subset
@@ -191,7 +235,7 @@ class LGBMDataValuator:
             model = LGBMClassifier(**params, random_state=self.random_state, verbose=-1)
             model.fit(X_subset, y_subset)
 
-            # Evaluate on test set with BOTH metrics
+            # Evaluate on test set with ALL metrics
             y_pred_proba = model.predict_proba(self.X_test)[:, 1]
 
             # ROC-AUC score
@@ -202,11 +246,23 @@ class LGBMDataValuator:
             y_pred_proba_clipped = np.clip(y_pred_proba, 1e-15, 1 - 1e-15)
             logloss_value = -log_loss(self.y_test, y_pred_proba_clipped)
 
-            return {"auroc": auroc, "logloss": logloss_value}
+            # Classification metrics at threshold 0.5
+            y_pred_class = (y_pred_proba >= 0.5).astype(int)
+            f1 = f1_score(self.y_test, y_pred_class, zero_division=0.0)
+            precision = precision_score(self.y_test, y_pred_class, zero_division=0.0)
+            recall = recall_score(self.y_test, y_pred_class, zero_division=0.0)
+
+            return {
+                "auroc": auroc,
+                "logloss": logloss_value,
+                "f1": f1,
+                "precision": precision,
+                "recall": recall,
+            }
 
         except Exception as e:
             # Silently return 0.0 for failed training
-            return {"auroc": 0.0, "logloss": 0.0}
+            return {"auroc": 0.0, "logloss": 0.0, "f1": 0.0, "precision": 0.0, "recall": 0.0}
 
     def _compute_single_permutation(
         self,
@@ -231,6 +287,9 @@ class LGBMDataValuator:
             Dictionary with contribution lists for each metric:
                 - 'auroc': List of contribution lists for ROC-AUC
                 - 'logloss': List of contribution lists for Log-Loss
+                - 'f1': List of contribution lists for F1 Score
+                - 'precision': List of contribution lists for Precision
+                - 'recall': List of contribution lists for Recall
             Each list contains one entry per training point.
             contributions[i] contains all marginal contributions for point i.
         """
@@ -243,9 +302,12 @@ class LGBMDataValuator:
         # Track contributions for each point (separate for each metric)
         contributions_auroc = [[] for _ in range(self.n_train)]
         contributions_logloss = [[] for _ in range(self.n_train)]
+        contributions_f1 = [[] for _ in range(self.n_train)]
+        contributions_precision = [[] for _ in range(self.n_train)]
+        contributions_recall = [[] for _ in range(self.n_train)]
 
         # Previous coalition performance for each metric
-        prev_performance = {"auroc": 0.0, "logloss": 0.0}
+        prev_performance = {"auroc": 0.0, "logloss": 0.0, "f1": 0.0, "precision": 0.0, "recall": 0.0}
 
         # Evaluate contributions along the permutation
         for coalition_size in range(1, max_coalition_size + 1):
@@ -258,18 +320,30 @@ class LGBMDataValuator:
             # Marginal contribution of the last added point
             added_point = permutation[coalition_size - 1]
 
-            # Compute marginal contributions for both metrics
+            # Compute marginal contributions for all metrics
             marginal_auroc = current_performance["auroc"] - prev_performance["auroc"]
             marginal_logloss = current_performance["logloss"] - prev_performance["logloss"]
+            marginal_f1 = current_performance["f1"] - prev_performance["f1"]
+            marginal_precision = current_performance["precision"] - prev_performance["precision"]
+            marginal_recall = current_performance["recall"] - prev_performance["recall"]
 
             # Record contributions
             contributions_auroc[added_point].append(marginal_auroc)
             contributions_logloss[added_point].append(marginal_logloss)
+            contributions_f1[added_point].append(marginal_f1)
+            contributions_precision[added_point].append(marginal_precision)
+            contributions_recall[added_point].append(marginal_recall)
 
             # Update for next iteration
             prev_performance = current_performance
 
-        return {"auroc": contributions_auroc, "logloss": contributions_logloss}
+        return {
+            "auroc": contributions_auroc,
+            "logloss": contributions_logloss,
+            "f1": contributions_f1,
+            "precision": contributions_precision,
+            "recall": contributions_recall,
+        }
 
     def compute_shapley_values(
         self,
@@ -309,6 +383,9 @@ class LGBMDataValuator:
         # Separate tracking for each metric
         contributions_per_point_auroc = [[] for _ in range(self.n_train)]
         contributions_per_point_logloss = [[] for _ in range(self.n_train)]
+        contributions_per_point_f1 = [[] for _ in range(self.n_train)]
+        contributions_per_point_precision = [[] for _ in range(self.n_train)]
+        contributions_per_point_recall = [[] for _ in range(self.n_train)]
 
         total_iterations = num_samples * max_coalition_size
 
@@ -368,7 +445,7 @@ class LGBMDataValuator:
 
                 elapsed = time.time() - start_time
 
-                # Aggregate results from all permutations (now returns dict with both metrics)
+                # Aggregate results from all permutations (now returns dict with all metrics)
                 for perm_contributions in results:
                     for point_idx in range(self.n_train):
                         contributions_per_point_auroc[point_idx].extend(
@@ -376,6 +453,15 @@ class LGBMDataValuator:
                         )
                         contributions_per_point_logloss[point_idx].extend(
                             perm_contributions["logloss"][point_idx]
+                        )
+                        contributions_per_point_f1[point_idx].extend(
+                            perm_contributions["f1"][point_idx]
+                        )
+                        contributions_per_point_precision[point_idx].extend(
+                            perm_contributions["precision"][point_idx]
+                        )
+                        contributions_per_point_recall[point_idx].extend(
+                            perm_contributions["recall"][point_idx]
                         )
 
                 if show_progress:
@@ -416,8 +502,8 @@ class LGBMDataValuator:
                 # Generate random permutation
                 permutation = np.random.permutation(self.n_train)
 
-                # Previous coalition performance (dict with both metrics)
-                prev_performance = {"auroc": 0.0, "logloss": 0.0}
+                # Previous coalition performance (dict with all metrics)
+                prev_performance = {"auroc": 0.0, "logloss": 0.0, "f1": 0.0, "precision": 0.0, "recall": 0.0}
 
                 # Evaluate contributions along the permutation
                 for coalition_size in range(1, max_coalition_size + 1):
@@ -430,13 +516,19 @@ class LGBMDataValuator:
                     # Marginal contribution of the last added point
                     added_point = permutation[coalition_size - 1]
 
-                    # Compute marginal contributions for both metrics
+                    # Compute marginal contributions for all metrics
                     marginal_auroc = current_performance["auroc"] - prev_performance["auroc"]
                     marginal_logloss = current_performance["logloss"] - prev_performance["logloss"]
+                    marginal_f1 = current_performance["f1"] - prev_performance["f1"]
+                    marginal_precision = current_performance["precision"] - prev_performance["precision"]
+                    marginal_recall = current_performance["recall"] - prev_performance["recall"]
 
                     # Record contributions
                     contributions_per_point_auroc[added_point].append(marginal_auroc)
                     contributions_per_point_logloss[added_point].append(marginal_logloss)
+                    contributions_per_point_f1[added_point].append(marginal_f1)
+                    contributions_per_point_precision[added_point].append(marginal_precision)
+                    contributions_per_point_recall[added_point].append(marginal_recall)
 
                     # Update for next iteration
                     prev_performance = current_performance
@@ -490,6 +582,72 @@ class LGBMDataValuator:
         # 95% confidence interval (z=1.96 for 95% CI)
         self.shapley_ci_lower_logloss = self.shapley_values_logloss - 1.96 * self.shapley_se_logloss
         self.shapley_ci_upper_logloss = self.shapley_values_logloss + 1.96 * self.shapley_se_logloss
+
+        # ===================================================================
+        # Compute Shapley values and uncertainty metrics for F1 Score
+        # ===================================================================
+        self.shapley_values_f1 = np.array(
+            [np.mean(contribs) if contribs else 0.0
+             for contribs in contributions_per_point_f1]
+        )
+
+        self.shapley_std_f1 = np.array(
+            [np.std(contribs) if len(contribs) > 1 else 0.0
+             for contribs in contributions_per_point_f1]
+        )
+
+        self.shapley_se_f1 = np.array(
+            [np.std(contribs) / np.sqrt(len(contribs)) if len(contribs) > 1 else 0.0
+             for contribs in contributions_per_point_f1]
+        )
+
+        # 95% confidence interval (z=1.96 for 95% CI)
+        self.shapley_ci_lower_f1 = self.shapley_values_f1 - 1.96 * self.shapley_se_f1
+        self.shapley_ci_upper_f1 = self.shapley_values_f1 + 1.96 * self.shapley_se_f1
+
+        # ===================================================================
+        # Compute Shapley values and uncertainty metrics for Precision
+        # ===================================================================
+        self.shapley_values_precision = np.array(
+            [np.mean(contribs) if contribs else 0.0
+             for contribs in contributions_per_point_precision]
+        )
+
+        self.shapley_std_precision = np.array(
+            [np.std(contribs) if len(contribs) > 1 else 0.0
+             for contribs in contributions_per_point_precision]
+        )
+
+        self.shapley_se_precision = np.array(
+            [np.std(contribs) / np.sqrt(len(contribs)) if len(contribs) > 1 else 0.0
+             for contribs in contributions_per_point_precision]
+        )
+
+        # 95% confidence interval (z=1.96 for 95% CI)
+        self.shapley_ci_lower_precision = self.shapley_values_precision - 1.96 * self.shapley_se_precision
+        self.shapley_ci_upper_precision = self.shapley_values_precision + 1.96 * self.shapley_se_precision
+
+        # ===================================================================
+        # Compute Shapley values and uncertainty metrics for Recall
+        # ===================================================================
+        self.shapley_values_recall = np.array(
+            [np.mean(contribs) if contribs else 0.0
+             for contribs in contributions_per_point_recall]
+        )
+
+        self.shapley_std_recall = np.array(
+            [np.std(contribs) if len(contribs) > 1 else 0.0
+             for contribs in contributions_per_point_recall]
+        )
+
+        self.shapley_se_recall = np.array(
+            [np.std(contribs) / np.sqrt(len(contribs)) if len(contribs) > 1 else 0.0
+             for contribs in contributions_per_point_recall]
+        )
+
+        # 95% confidence interval (z=1.96 for 95% CI)
+        self.shapley_ci_lower_recall = self.shapley_values_recall - 1.96 * self.shapley_se_recall
+        self.shapley_ci_upper_recall = self.shapley_values_recall + 1.96 * self.shapley_se_recall
 
         # ===================================================================
         # Set legacy attributes (aliases for backward compatibility)
@@ -546,6 +704,69 @@ class LGBMDataValuator:
                          f"({100 * n_harmful_logloss / self.n_train:.1f}%)")
             console.print(f"    Beneficial points (SV > 0): {n_beneficial_logloss:,} "
                          f"({100 * n_beneficial_logloss / self.n_train:.1f}%)")
+
+            # ===================================================================
+            # Display F1 Score Statistics
+            # ===================================================================
+            console.print(f"\n[bold yellow]F1 Score Metric:[/bold yellow]")
+            console.print(f"  Mean Shapley value: {np.mean(self.shapley_values_f1):.6f}")
+            console.print(f"  Std Shapley value:  {np.std(self.shapley_values_f1):.6f}")
+            console.print(f"  Min Shapley value:  {np.min(self.shapley_values_f1):.6f}")
+            console.print(f"  Max Shapley value:  {np.max(self.shapley_values_f1):.6f}")
+            console.print(
+                f"  Mean uncertainty (SE): {np.mean(self.shapley_se_f1):.6f}"
+            )
+
+            # Count harmful vs beneficial points
+            n_harmful_f1 = np.sum(self.shapley_values_f1 < 0)
+            n_beneficial_f1 = np.sum(self.shapley_values_f1 > 0)
+            console.print(f"\n  Value Distribution:")
+            console.print(f"    Harmful points (SV < 0):    {n_harmful_f1:,} "
+                         f"({100 * n_harmful_f1 / self.n_train:.1f}%)")
+            console.print(f"    Beneficial points (SV > 0): {n_beneficial_f1:,} "
+                         f"({100 * n_beneficial_f1 / self.n_train:.1f}%)")
+
+            # ===================================================================
+            # Display Precision Statistics
+            # ===================================================================
+            console.print(f"\n[bold green]Precision Metric:[/bold green]")
+            console.print(f"  Mean Shapley value: {np.mean(self.shapley_values_precision):.6f}")
+            console.print(f"  Std Shapley value:  {np.std(self.shapley_values_precision):.6f}")
+            console.print(f"  Min Shapley value:  {np.min(self.shapley_values_precision):.6f}")
+            console.print(f"  Max Shapley value:  {np.max(self.shapley_values_precision):.6f}")
+            console.print(
+                f"  Mean uncertainty (SE): {np.mean(self.shapley_se_precision):.6f}"
+            )
+
+            # Count harmful vs beneficial points
+            n_harmful_precision = np.sum(self.shapley_values_precision < 0)
+            n_beneficial_precision = np.sum(self.shapley_values_precision > 0)
+            console.print(f"\n  Value Distribution:")
+            console.print(f"    Harmful points (SV < 0):    {n_harmful_precision:,} "
+                         f"({100 * n_harmful_precision / self.n_train:.1f}%)")
+            console.print(f"    Beneficial points (SV > 0): {n_beneficial_precision:,} "
+                         f"({100 * n_beneficial_precision / self.n_train:.1f}%)")
+
+            # ===================================================================
+            # Display Recall Statistics
+            # ===================================================================
+            console.print(f"\n[bold blue]Recall Metric:[/bold blue]")
+            console.print(f"  Mean Shapley value: {np.mean(self.shapley_values_recall):.6f}")
+            console.print(f"  Std Shapley value:  {np.std(self.shapley_values_recall):.6f}")
+            console.print(f"  Min Shapley value:  {np.min(self.shapley_values_recall):.6f}")
+            console.print(f"  Max Shapley value:  {np.max(self.shapley_values_recall):.6f}")
+            console.print(
+                f"  Mean uncertainty (SE): {np.mean(self.shapley_se_recall):.6f}"
+            )
+
+            # Count harmful vs beneficial points
+            n_harmful_recall = np.sum(self.shapley_values_recall < 0)
+            n_beneficial_recall = np.sum(self.shapley_values_recall > 0)
+            console.print(f"\n  Value Distribution:")
+            console.print(f"    Harmful points (SV < 0):    {n_harmful_recall:,} "
+                         f"({100 * n_harmful_recall / self.n_train:.1f}%)")
+            console.print(f"    Beneficial points (SV > 0): {n_beneficial_recall:,} "
+                         f"({100 * n_beneficial_recall / self.n_train:.1f}%)")
 
         return self.shapley_values_auroc  # Return ROC-AUC for backward compatibility
 
