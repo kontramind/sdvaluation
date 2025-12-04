@@ -1,5 +1,5 @@
 """
-Generate confusion matrices for Real vs Synthetic data comparison.
+Generate confusion matrices for Real vs Next-Gen Synthetic data comparison.
 
 Trains LightGBM on full training datasets and evaluates on test set,
 producing confusion matrices for direct FP/FN comparison.
@@ -240,7 +240,7 @@ def compare_confusion_matrices(name1: str, results1: dict, name2: str, results2:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Generate and compare confusion matrices for Real vs Synthetic data"
+        description="Generate and compare confusion matrices for Real vs Next-Gen Synthetic data"
     )
     parser.add_argument(
         "--real-train",
@@ -249,10 +249,10 @@ def main():
         help="Path to real training data CSV",
     )
     parser.add_argument(
-        "--gen2-train",
+        "--next-gen-train",
         type=Path,
         required=False,
-        help="Path to Gen2 training data CSV (optional for comparison)",
+        help="Path to next-gen synthetic training data CSV (optional for comparison)",
     )
     parser.add_argument(
         "--test-file",
@@ -311,11 +311,11 @@ def main():
     # Print Real results
     print_confusion_matrix("Real Data (Gen0)", real_results)
 
-    # Train and evaluate on Gen2 data if provided
-    if args.gen2_train:
-        console.print("\n[bold magenta]Processing Gen2 Data...[/bold magenta]")
-        gen2_results = train_and_evaluate(
-            args.gen2_train,
+    # Train and evaluate on next-gen data if provided
+    if args.next_gen_train:
+        console.print("\n[bold magenta]Processing Next-Gen Synthetic Data...[/bold magenta]")
+        next_gen_results = train_and_evaluate(
+            args.next_gen_train,
             args.test_file,
             args.encoding_config,
             lgbm_params,
@@ -324,13 +324,13 @@ def main():
             args.random_state,
         )
 
-        # Print Gen2 results
-        print_confusion_matrix("Gen2 Data (Synthetic)", gen2_results)
+        # Print next-gen results
+        print_confusion_matrix("Next-Gen Synthetic Data", next_gen_results)
 
         # Compare
-        compare_confusion_matrices("Real", real_results, "Gen2", gen2_results)
+        compare_confusion_matrices("Real", real_results, "Next-Gen", next_gen_results)
     else:
-        console.print("\n[dim]No Gen2 data provided - skipping comparison[/dim]")
+        console.print("\n[dim]No next-gen data provided - skipping comparison[/dim]")
 
     console.print("\n[bold green]✓ Analysis Complete![/bold green]\n")
 
