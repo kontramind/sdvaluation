@@ -31,6 +31,10 @@ def load_lgbm_params(params_file: Path) -> dict:
     params.pop("early_stopping_rounds", None)
     params.pop("optimal_threshold", None)
     params.pop("test_metrics", None)
+    params.pop("best_hyperparameters", None)
+
+    # Filter out any remaining dict-valued parameters (metadata fields)
+    params = {k: v for k, v in params.items() if not isinstance(v, dict)}
 
     return params
 
