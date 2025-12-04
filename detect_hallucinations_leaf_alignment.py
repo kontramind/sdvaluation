@@ -249,6 +249,70 @@ def compute_confidence_intervals(
     return mean, se, ci_lower, ci_upper
 
 
+def display_class_statistics(
+    results: pd.DataFrame,
+    y_synthetic: pd.Series,
+    target_column: str,
+) -> None:
+    """Display hallucination statistics broken down by class."""
+    console.print("\n[bold cyan]═══════════════════════════════════════════════════[/bold cyan]")
+    console.print("[bold cyan]           Class-Specific Statistics               [/bold cyan]")
+    console.print("[bold cyan]═══════════════════════════════════════════════════[/bold cyan]\n")
+
+    # Add class labels to results
+    results_with_class = results.copy()
+    results_with_class["class"] = y_synthetic.values
+
+    for class_value in [0, 1]:
+        class_name = "Negative (No Readmission)" if class_value == 0 else "Positive (Readmission)"
+        class_results = results_with_class[results_with_class["class"] == class_value]
+        n_class = len(class_results)
+
+        console.print(f"[bold]{class_name} - {n_class:,} points[/bold]")
+
+        # Distribution
+        n_negative = np.sum(class_results["utility_score"] < 0)
+        n_positive = np.sum(class_results["utility_score"] > 0)
+
+        console.print("  Utility Distribution:")
+        console.print(
+            f"    Negative utility: {n_negative:,} ({100*n_negative/n_class:.2f}%)"
+        )
+        console.print(
+            f"    Positive utility: {n_positive:,} ({100*n_positive/n_class:.2f}%)"
+        )
+
+        # Statistical confidence
+        n_hallucinated = np.sum(class_results["reliably_hallucinated"])
+        reliably_beneficial = class_results["utility_ci_lower"] > 0
+        n_beneficial = np.sum(reliably_beneficial)
+        n_uncertain = n_class - n_hallucinated - n_beneficial
+
+        console.print("  Statistical Confidence:")
+        color = "red" if n_hallucinated / n_class > 0.1 else "yellow"
+        console.print(
+            f"    Reliably hallucinated: [{color}]{n_hallucinated:,}[/{color}] "
+            f"({100*n_hallucinated/n_class:.2f}%)"
+        )
+        console.print(
+            f"    Reliably beneficial:   [green]{n_beneficial:,}[/green] "
+            f"({100*n_beneficial/n_class:.2f}%)"
+        )
+        console.print(
+            f"    Uncertain:             {n_uncertain:,} ({100*n_uncertain/n_class:.2f}%)"
+        )
+
+        # Statistics
+        console.print("  Utility Statistics:")
+        console.print(f"    Mean:   {class_results['utility_score'].mean():.6f}")
+        console.print(f"    Median: {class_results['utility_score'].median():.6f}")
+        console.print(f"    Std:    {class_results['utility_score'].std():.6f}")
+        console.print(f"    Min:    {class_results['utility_score'].min():.6f}")
+        console.print(f"    Max:    {class_results['utility_score'].max():.6f}")
+
+        console.print()
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Detect hallucinated synthetic data using leaf co-occurrence analysis"
@@ -294,6 +358,17 @@ def main():
         type=float,
         default=-1.0,
         help="Penalty for synthetic points in leaves with no real data",
+    )
+    parser.add_argument(
+        "--n-estimators",
+        type=int,
+        default=None,
+        help="Number of trees (overrides value in lgbm-params). More trees = tighter CIs.",
+    )
+    parser.add_argument(
+        "--by-class",
+        action="store_true",
+        help="Show hallucination statistics separately for positive vs negative class",
     )
     parser.add_argument(
         "--random-state",
@@ -349,6 +424,11 @@ def main():
     # Load LightGBM parameters
     lgbm_params = load_lgbm_params(args.lgbm_params)
 
+    # Override n_estimators if specified
+    if args.n_estimators is not None:
+        lgbm_params["n_estimators"] = args.n_estimators
+        console.print(f"\n[yellow]Overriding n_estimators: {args.n_estimators}[/yellow]")
+
     # Handle class imbalance
     n_pos = np.sum(y_synthetic == 1)
     n_neg = np.sum(y_synthetic == 0)
@@ -357,6 +437,7 @@ def main():
     console.print("\n[bold]Step 3: Training LightGBM on Synthetic Data[/bold]")
     console.print(f"  Class distribution: {n_pos:,} positive, {n_neg:,} negative")
     console.print(f"  Scale pos weight: {lgbm_params['scale_pos_weight']:.2f}")
+    console.print(f"  Number of trees: {lgbm_params.get('n_estimators', 100)}")
 
     model = LGBMClassifier(**lgbm_params, random_state=args.random_state, verbose=-1)
     model.fit(X_synthetic_encoded, y_synthetic)
@@ -467,6 +548,10 @@ def main():
         console.print(table)
     else:
         console.print("\n[green]No reliably hallucinated points detected![/green]")
+
+    # Display class-specific statistics if requested
+    if args.by_class:
+        display_class_statistics(results, y_synthetic, args.target_column)
 
     console.print("\n[bold green]✓ Analysis Complete![/bold green]\n")
 
