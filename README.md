@@ -271,6 +271,273 @@ This package was developed for evaluating synthetic data quality in the context 
 
 By removing samples with negative Shapley values, model performance on real test data can be significantly improved.
 
+## Leaf Co-Occurrence Hallucination Detection
+
+### Overview
+
+In addition to Data Shapley valuation, **sdvaluation** provides a complementary method for detecting **hallucinated synthetic data** using **leaf co-occurrence analysis**. This method identifies synthetic training points that create decision boundaries misaligned with real test data patterns.
+
+**Key Insight:** Data Shapley measures individual point quality in random subsets (marginal contribution), but hallucinations are often **distributional issues** that manifest when training on the full dataset. Leaf co-occurrence directly measures whether synthetic points help build decision boundaries that generalize to real data.
+
+### Why Use Leaf Co-Occurrence?
+
+**Shapley Analysis Alone Can Miss Distributional Hallucinations:**
+
+```
+Scenario: Synthetic data with good individual point quality but wrong collective patterns
+
+Shapley says:     "3.4% of points are harmful"  ← Point-level analysis
+Reality:          "93% of points create wrong decision boundaries"
+Confusion matrix: "Recall drops from 40% to 10%"
+
+Root cause: Individual points look plausible but collectively have wrong correlations
+```
+
+**Use Both Methods Together:**
+
+| Method | Measures | Detects | Runtime |
+|--------|----------|---------|---------|
+| **Confusion Matrix** | Aggregate model performance | Performance degradation | ~2 min |
+| **Leaf Co-Occurrence** | Decision boundary quality | Individual hallucinated points | ~5 min |
+| **Data Shapley** | Marginal contribution | Point-level harmful samples | ~90 min |
+
+### How It Works
+
+The leaf co-occurrence algorithm adapts "In-Run Shapley" for tree models:
+
+1. **Train LightGBM once** on synthetic training data
+2. **Extract leaf assignments**: Pass synthetic training + real test data through the model
+3. **Score each leaf**: For every leaf in every tree:
+   - Calculate how well it classifies **real test data** (leaf utility)
+   - Assign utility to **synthetic points** that fell into that leaf
+4. **Aggregate across trees**: Each tree provides an independent utility estimate
+5. **Compute confidence intervals**: Identify reliably hallucinated points (CI upper < 0)
+
+**The Core Idea:**
+```
+Synthetic point creates leaf → Real test data falls (or doesn't fall) into that leaf
+→ Does the leaf correctly classify real data?
+→ Low utility = Hallucinated point that created wrong decision boundaries
+```
+
+### Usage
+
+#### Basic Leaf Co-Occurrence Analysis
+
+```bash
+python detect_hallucinations_leaf_alignment.py \
+  --synthetic-train data/synthetic_train.csv \
+  --real-test data/real_test.csv \
+  --encoding-config config/encoding.yaml \
+  --lgbm-params config/lgbm_params.json
+```
+
+#### With Class-Specific Breakdown
+
+```bash
+python detect_hallucinations_leaf_alignment.py \
+  --synthetic-train data/synthetic_train.csv \
+  --real-test data/real_test.csv \
+  --encoding-config config/encoding.yaml \
+  --lgbm-params config/lgbm_params.json \
+  --by-class  # Show positive vs negative class separately
+```
+
+#### With Tighter Confidence Intervals
+
+```bash
+python detect_hallucinations_leaf_alignment.py \
+  --synthetic-train data/synthetic_train.csv \
+  --real-test data/real_test.csv \
+  --encoding-config config/encoding.yaml \
+  --lgbm-params config/lgbm_params.json \
+  --n-estimators 500  # More trees = tighter CIs (default: 100)
+  --by-class
+```
+
+**Effect of More Trees:**
+
+| Trees | CI Width | Uncertain % | Runtime | Use Case |
+|-------|----------|-------------|---------|----------|
+| 100 | Wider | ~30-40% | ~2 min | Quick exploration |
+| 500 | Medium | ~5-10% | ~5 min | **Recommended** |
+| 1000 | Tight | ~3-5% | ~10 min | Final analysis |
+
+### Output
+
+The script generates a CSV file (`hallucination_scores.csv`) with:
+
+| Column | Description |
+|--------|-------------|
+| `synthetic_index` | Index in synthetic training data |
+| `utility_score` | Mean utility across all trees |
+| `utility_se` | Standard error |
+| `utility_ci_lower` | Lower 95% confidence bound |
+| `utility_ci_upper` | Upper 95% confidence bound |
+| `reliably_hallucinated` | True if CI upper < 0 |
+
+### Interpreting Results
+
+#### Utility Scores
+
+- **Positive utility (> 0)**: Synthetic point creates leaves that correctly classify real data
+- **Negative utility (< 0)**: Synthetic point creates leaves that misclassify real data
+- **CI upper < 0**: Reliably hallucinated (all trees agree it's harmful)
+- **CI lower > 0**: Reliably beneficial (all trees agree it's helpful)
+- **CI spans 0**: Uncertain
+
+#### Example Output
+
+```
+Statistical Confidence (95% CI-based):
+  Reliably hallucinated (CI upper < 0): 9,339 (93.39%)  ← 93% of data is hallucinated!
+  Reliably beneficial (CI lower > 0):   54 (0.54%)
+  Uncertain (CI spans 0):                607 (6.07%)
+
+Class-Specific Statistics:
+
+Negative (No Readmission) - 8,997 points
+  Reliably hallucinated: 8,385 (93.20%)  ← Both classes are bad
+
+Positive (Readmission) - 1,003 points
+  Reliably hallucinated: 954 (95.11%)  ← But positive class is worse
+  Positive utility:      0 (0.00%)      ← EVERY point is harmful!
+```
+
+#### What This Means
+
+**Good synthetic data (like Real training data):**
+- ~90% reliably beneficial
+- ~0.25% reliably hallucinated
+- Creates decision boundaries that generalize to test data
+
+**Bad synthetic data (Gen1/Gen2 in our tests):**
+- ~93-95% reliably hallucinated
+- ~0% reliably beneficial
+- Creates decision boundaries in wrong places
+- Cannot learn target patterns (e.g., readmissions)
+
+### Confusion Matrix Comparison (Fast Screening)
+
+For even faster validation (~2 minutes), use the confusion matrix tool:
+
+```bash
+python generate_confusion_matrices.py \
+  --real-train data/real_train.csv \
+  --next-gen-train data/synthetic_train.csv \
+  --test-file data/test.csv \
+  --encoding-config config/encoding.yaml \
+  --lgbm-params config/lgbm_params.json
+```
+
+**Output:**
+```
+Real Data:  Precision: 18.34%, Recall: 39.96%, F1: 25.14%
+Gen2 Data:  Precision:  7.86%, Recall: 10.49%, F1:  8.99%
+
+Metric Changes (Gen2 vs Real):
+  Precision: -10.48% (degraded)
+  Recall:    -29.47% (degraded)  ← Major red flag!
+  F1 Score:  -16.15% (degraded)
+```
+
+### Recommended Validation Workflow
+
+For synthetic data quality assessment, use all three methods:
+
+```bash
+# 1. Fast screening (~2 min)
+python generate_confusion_matrices.py \
+  --real-train real_train.csv \
+  --next-gen-train synthetic_train.csv \
+  --test-file test.csv \
+  --encoding-config encoding.yaml \
+  --lgbm-params lgbm_params.json
+
+# If performance degrades significantly:
+
+# 2. Leaf co-occurrence analysis (~5 min)
+python detect_hallucinations_leaf_alignment.py \
+  --synthetic-train synthetic_train.csv \
+  --real-test test.csv \
+  --encoding-config encoding.yaml \
+  --lgbm-params lgbm_params.json \
+  --by-class \
+  --n-estimators 500
+
+# 3. Full Shapley analysis (~90 min) - if needed for point-level diagnosis
+python -m sdvaluation.core \
+  --train-file synthetic_train.csv \
+  --test-file test.csv \
+  --encoding-config encoding.yaml \
+  --lgbm-params lgbm_params.json \
+  --num-samples 200 \
+  --max-coalition-size 5000
+```
+
+**What Each Method Tells You:**
+
+1. **Confusion Matrix** → "Is there a problem?" (aggregate performance)
+2. **Leaf Co-Occurrence** → "Which points are hallucinated?" (decision boundaries)
+3. **Shapley Analysis** → "What's the marginal contribution?" (random subsets)
+
+### Real-World Example: MIMIC-III Gen2 Synthetic Data
+
+**Scenario:** Recursive synthetic training (Real → Gen1 → Gen2) using SynthCity Marginal Distributions
+
+**Results:**
+
+| Dataset | Confusion Matrix | Leaf Co-Occurrence | Shapley Analysis |
+|---------|-----------------|-------------------|------------------|
+| **Real** | Recall: 40% | 0.25% hallucinated | 3.28% reliably harmful |
+| **Gen2** | Recall: 10% ❌ | 93.39% hallucinated ❌ | 3.39% reliably harmful ✓ |
+
+**Diagnosis:**
+- Confusion matrix detected 30% recall drop
+- Leaf co-occurrence revealed 93% of Gen2 creates wrong decision boundaries
+- Shapley alone missed the problem (only 3.39% harmful)
+- **Root cause:** Gen2 points look individually plausible but collectively have wrong patterns
+
+**Positive Class Analysis:**
+```
+Real positive class:  74% helpful, 2% harmful
+Gen2 positive class:  0% helpful, 95% harmful  ← Completely destroyed!
+```
+
+**Conclusion:** Gen2 cannot learn readmissions because 95% of positive class examples are hallucinated patterns.
+
+### When to Use Each Method
+
+**Use Confusion Matrix when:**
+- Quick screening for performance degradation
+- Comparing multiple synthetic datasets
+- Checking if aggregate metrics changed
+
+**Use Leaf Co-Occurrence when:**
+- Confusion matrix shows degradation
+- Need to identify specific hallucinated points
+- Want to understand class-specific issues
+- Faster than Shapley, more detailed than confusion matrix
+
+**Use Shapley Analysis when:**
+- Need marginal contribution across random subsets
+- Building point removal/weighting strategies
+- Academic/publication rigor required
+- Have time for comprehensive analysis
+
+### Key Findings from Our Research
+
+Testing Real, Gen1, and Gen2 MIMIC-III readmission data:
+
+1. **Gen2 > Gen1** (marginally): Gen2 is 1-8% less hallucinated than Gen1
+2. **Both unusable**: Gen1: 94.44% hallucinated, Gen2: 93.39% hallucinated
+3. **Real is excellent**: 0.25% hallucinated, 89.69% beneficial
+4. **Ratio: 373:1**: Gen2 is 373× more hallucinated than Real
+5. **Failure at Gen1**: Catastrophic drop happened Real→Gen1, not Gen1→Gen2
+6. **Positive class destroyed**: 0% of Gen1/Gen2 positive points create useful boundaries
+
+**Implication:** Recursive training doesn't degrade quality further; the initial generation fundamentally failed to capture predictive patterns.
+
 ## License
 
 This project is licensed under the Apache License 2.0. See the LICENSE file for details.
