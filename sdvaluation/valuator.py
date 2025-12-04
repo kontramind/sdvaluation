@@ -15,7 +15,7 @@ from joblib import Parallel, delayed
 from lightgbm import LGBMClassifier
 from rich.console import Console
 from rich.progress import Progress, BarColumn, TextColumn, TimeRemainingColumn
-from sklearn.metrics import roc_auc_score
+from sklearn.metrics import roc_auc_score, log_loss
 
 # Suppress all warnings
 warnings.filterwarnings("ignore", category=UserWarning)
@@ -30,7 +30,8 @@ class LGBMDataValuator:
     Data Shapley valuator using LightGBM classifier.
 
     Computes the Shapley value for each training data point based on its
-    marginal contribution to the model's ROC-AUC score on a test set.
+    marginal contribution to the model's performance on a test set.
+    Supports dual-metric analysis: ROC-AUC and Log-Loss.
 
     Attributes:
         X_train: Training features
@@ -41,11 +42,27 @@ class LGBMDataValuator:
         random_state: Random seed for reproducibility
         X_train_original: Original training features (before encoding) for output
         n_train: Number of training samples
-        shapley_values: Computed Shapley values for each training point
-        shapley_std: Standard deviation of Shapley estimates
-        shapley_se: Standard error of Shapley estimates
-        shapley_ci_lower: Lower bound of 95% confidence interval
-        shapley_ci_upper: Upper bound of 95% confidence interval
+
+        ROC-AUC metrics:
+        shapley_values_auroc: Shapley values based on ROC-AUC
+        shapley_std_auroc: Standard deviation of ROC-AUC Shapley estimates
+        shapley_se_auroc: Standard error of ROC-AUC Shapley estimates
+        shapley_ci_lower_auroc: Lower bound of 95% CI (ROC-AUC)
+        shapley_ci_upper_auroc: Upper bound of 95% CI (ROC-AUC)
+
+        Log-Loss metrics:
+        shapley_values_logloss: Shapley values based on negative Log-Loss
+        shapley_std_logloss: Standard deviation of Log-Loss Shapley estimates
+        shapley_se_logloss: Standard error of Log-Loss Shapley estimates
+        shapley_ci_lower_logloss: Lower bound of 95% CI (Log-Loss)
+        shapley_ci_upper_logloss: Upper bound of 95% CI (Log-Loss)
+
+        Legacy attributes (for backward compatibility, aliased to ROC-AUC):
+        shapley_values: Alias for shapley_values_auroc
+        shapley_std: Alias for shapley_std_auroc
+        shapley_se: Alias for shapley_se_auroc
+        shapley_ci_lower: Alias for shapley_ci_lower_auroc
+        shapley_ci_upper: Alias for shapley_ci_upper_auroc
     """
 
     def __init__(
@@ -79,7 +96,21 @@ class LGBMDataValuator:
         self.X_train_original = X_train_original
         self.n_train = len(X_train)
 
-        # Results storage
+        # Results storage - ROC-AUC metrics
+        self.shapley_values_auroc: Optional[np.ndarray] = None
+        self.shapley_std_auroc: Optional[np.ndarray] = None
+        self.shapley_se_auroc: Optional[np.ndarray] = None
+        self.shapley_ci_lower_auroc: Optional[np.ndarray] = None
+        self.shapley_ci_upper_auroc: Optional[np.ndarray] = None
+
+        # Results storage - Log-Loss metrics
+        self.shapley_values_logloss: Optional[np.ndarray] = None
+        self.shapley_std_logloss: Optional[np.ndarray] = None
+        self.shapley_se_logloss: Optional[np.ndarray] = None
+        self.shapley_ci_lower_logloss: Optional[np.ndarray] = None
+        self.shapley_ci_upper_logloss: Optional[np.ndarray] = None
+
+        # Legacy attributes (aliases for backward compatibility)
         self.shapley_values: Optional[np.ndarray] = None
         self.shapley_std: Optional[np.ndarray] = None
         self.shapley_se: Optional[np.ndarray] = None
@@ -115,7 +146,7 @@ class LGBMDataValuator:
 
         return processed
 
-    def _train_and_evaluate(self, indices: np.ndarray, num_threads: int = 0) -> float:
+    def _train_and_evaluate(self, indices: np.ndarray, num_threads: int = 0) -> Dict[str, float]:
         """
         Train LightGBM on a subset of training data and evaluate on test set.
 
@@ -124,18 +155,21 @@ class LGBMDataValuator:
             num_threads: Number of threads for LightGBM (0 = use default)
 
         Returns:
-            ROC-AUC score on test set. Returns 0.0 if training fails or
+            Dictionary with performance metrics:
+                - 'auroc': ROC-AUC score on test set
+                - 'logloss': Negative log-loss on test set (higher is better)
+            Returns {'auroc': 0.0, 'logloss': 0.0} if training fails or
             if the subset contains only one class.
         """
         if len(indices) == 0:
-            return 0.0
+            return {"auroc": 0.0, "logloss": 0.0}
 
         X_subset = self.X_train.iloc[indices]
         y_subset = self.y_train.iloc[indices]
 
         # Check if we have both classes
         if len(np.unique(y_subset)) < 2:
-            return 0.0
+            return {"auroc": 0.0, "logloss": 0.0}
 
         try:
             # Prepare parameters for this subset
@@ -157,15 +191,22 @@ class LGBMDataValuator:
             model = LGBMClassifier(**params, random_state=self.random_state, verbose=-1)
             model.fit(X_subset, y_subset)
 
-            # Evaluate on test set
+            # Evaluate on test set with BOTH metrics
             y_pred_proba = model.predict_proba(self.X_test)[:, 1]
+
+            # ROC-AUC score
             auroc = roc_auc_score(self.y_test, y_pred_proba)
 
-            return auroc
+            # Negative log-loss (negative so higher is better, consistent with ROC-AUC)
+            # Clip probabilities to avoid log(0)
+            y_pred_proba_clipped = np.clip(y_pred_proba, 1e-15, 1 - 1e-15)
+            logloss_value = -log_loss(self.y_test, y_pred_proba_clipped)
+
+            return {"auroc": auroc, "logloss": logloss_value}
 
         except Exception as e:
             # Silently return 0.0 for failed training
-            return 0.0
+            return {"auroc": 0.0, "logloss": 0.0}
 
     def _compute_single_permutation(
         self,
@@ -173,7 +214,7 @@ class LGBMDataValuator:
         random_seed: int,
         max_coalition_size: int,
         num_threads: int = 0,
-    ) -> List[List[float]]:
+    ) -> Dict[str, List[List[float]]]:
         """
         Compute contributions for a single permutation.
 
@@ -187,7 +228,10 @@ class LGBMDataValuator:
             num_threads: Number of threads for LightGBM (0 = use default)
 
         Returns:
-            List of contribution lists, one per training point.
+            Dictionary with contribution lists for each metric:
+                - 'auroc': List of contribution lists for ROC-AUC
+                - 'logloss': List of contribution lists for Log-Loss
+            Each list contains one entry per training point.
             contributions[i] contains all marginal contributions for point i.
         """
         # Set seed for reproducibility
@@ -196,31 +240,36 @@ class LGBMDataValuator:
         # Generate random permutation
         permutation = np.random.permutation(self.n_train)
 
-        # Track contributions for each point
-        contributions = [[] for _ in range(self.n_train)]
+        # Track contributions for each point (separate for each metric)
+        contributions_auroc = [[] for _ in range(self.n_train)]
+        contributions_logloss = [[] for _ in range(self.n_train)]
 
-        # Previous coalition performance
-        prev_performance = 0.0
+        # Previous coalition performance for each metric
+        prev_performance = {"auroc": 0.0, "logloss": 0.0}
 
         # Evaluate contributions along the permutation
         for coalition_size in range(1, max_coalition_size + 1):
             # Current coalition
             coalition = permutation[:coalition_size]
 
-            # Evaluate coalition performance
+            # Evaluate coalition performance (returns dict with both metrics)
             current_performance = self._train_and_evaluate(coalition, num_threads)
 
             # Marginal contribution of the last added point
             added_point = permutation[coalition_size - 1]
-            marginal_contribution = current_performance - prev_performance
 
-            # Record contribution
-            contributions[added_point].append(marginal_contribution)
+            # Compute marginal contributions for both metrics
+            marginal_auroc = current_performance["auroc"] - prev_performance["auroc"]
+            marginal_logloss = current_performance["logloss"] - prev_performance["logloss"]
+
+            # Record contributions
+            contributions_auroc[added_point].append(marginal_auroc)
+            contributions_logloss[added_point].append(marginal_logloss)
 
             # Update for next iteration
             prev_performance = current_performance
 
-        return contributions
+        return {"auroc": contributions_auroc, "logloss": contributions_logloss}
 
     def compute_shapley_values(
         self,
@@ -257,7 +306,9 @@ class LGBMDataValuator:
         max_coalition_size = min(max_coalition_size, self.n_train)
 
         # Track all contributions for each point for uncertainty quantification
-        contributions_per_point = [[] for _ in range(self.n_train)]
+        # Separate tracking for each metric
+        contributions_per_point_auroc = [[] for _ in range(self.n_train)]
+        contributions_per_point_logloss = [[] for _ in range(self.n_train)]
 
         total_iterations = num_samples * max_coalition_size
 
@@ -317,11 +368,14 @@ class LGBMDataValuator:
 
                 elapsed = time.time() - start_time
 
-                # Aggregate results from all permutations
+                # Aggregate results from all permutations (now returns dict with both metrics)
                 for perm_contributions in results:
                     for point_idx in range(self.n_train):
-                        contributions_per_point[point_idx].extend(
-                            perm_contributions[point_idx]
+                        contributions_per_point_auroc[point_idx].extend(
+                            perm_contributions["auroc"][point_idx]
+                        )
+                        contributions_per_point_logloss[point_idx].extend(
+                            perm_contributions["logloss"][point_idx]
                         )
 
                 if show_progress:
@@ -362,23 +416,27 @@ class LGBMDataValuator:
                 # Generate random permutation
                 permutation = np.random.permutation(self.n_train)
 
-                # Previous coalition performance
-                prev_performance = 0.0
+                # Previous coalition performance (dict with both metrics)
+                prev_performance = {"auroc": 0.0, "logloss": 0.0}
 
                 # Evaluate contributions along the permutation
                 for coalition_size in range(1, max_coalition_size + 1):
                     # Current coalition
                     coalition = permutation[:coalition_size]
 
-                    # Evaluate coalition performance
+                    # Evaluate coalition performance (returns dict)
                     current_performance = self._train_and_evaluate(coalition, lgbm_threads)
 
                     # Marginal contribution of the last added point
                     added_point = permutation[coalition_size - 1]
-                    marginal_contribution = current_performance - prev_performance
 
-                    # Record contribution
-                    contributions_per_point[added_point].append(marginal_contribution)
+                    # Compute marginal contributions for both metrics
+                    marginal_auroc = current_performance["auroc"] - prev_performance["auroc"]
+                    marginal_logloss = current_performance["logloss"] - prev_performance["logloss"]
+
+                    # Record contributions
+                    contributions_per_point_auroc[added_point].append(marginal_auroc)
+                    contributions_per_point_logloss[added_point].append(marginal_logloss)
 
                     # Update for next iteration
                     prev_performance = current_performance
@@ -389,49 +447,107 @@ class LGBMDataValuator:
             if show_progress:
                 progress.stop()
 
-        # Compute Shapley values and uncertainty metrics
-        self.shapley_values = np.array(
+        # ===================================================================
+        # Compute Shapley values and uncertainty metrics for ROC-AUC
+        # ===================================================================
+        self.shapley_values_auroc = np.array(
             [np.mean(contribs) if contribs else 0.0
-             for contribs in contributions_per_point]
+             for contribs in contributions_per_point_auroc]
         )
 
-        self.shapley_std = np.array(
+        self.shapley_std_auroc = np.array(
             [np.std(contribs) if len(contribs) > 1 else 0.0
-             for contribs in contributions_per_point]
+             for contribs in contributions_per_point_auroc]
         )
 
-        self.shapley_se = np.array(
+        self.shapley_se_auroc = np.array(
             [np.std(contribs) / np.sqrt(len(contribs)) if len(contribs) > 1 else 0.0
-             for contribs in contributions_per_point]
+             for contribs in contributions_per_point_auroc]
         )
 
         # 95% confidence interval (z=1.96 for 95% CI)
-        self.shapley_ci_lower = self.shapley_values - 1.96 * self.shapley_se
-        self.shapley_ci_upper = self.shapley_values + 1.96 * self.shapley_se
+        self.shapley_ci_lower_auroc = self.shapley_values_auroc - 1.96 * self.shapley_se_auroc
+        self.shapley_ci_upper_auroc = self.shapley_values_auroc + 1.96 * self.shapley_se_auroc
+
+        # ===================================================================
+        # Compute Shapley values and uncertainty metrics for Log-Loss
+        # ===================================================================
+        self.shapley_values_logloss = np.array(
+            [np.mean(contribs) if contribs else 0.0
+             for contribs in contributions_per_point_logloss]
+        )
+
+        self.shapley_std_logloss = np.array(
+            [np.std(contribs) if len(contribs) > 1 else 0.0
+             for contribs in contributions_per_point_logloss]
+        )
+
+        self.shapley_se_logloss = np.array(
+            [np.std(contribs) / np.sqrt(len(contribs)) if len(contribs) > 1 else 0.0
+             for contribs in contributions_per_point_logloss]
+        )
+
+        # 95% confidence interval (z=1.96 for 95% CI)
+        self.shapley_ci_lower_logloss = self.shapley_values_logloss - 1.96 * self.shapley_se_logloss
+        self.shapley_ci_upper_logloss = self.shapley_values_logloss + 1.96 * self.shapley_se_logloss
+
+        # ===================================================================
+        # Set legacy attributes (aliases for backward compatibility)
+        # ===================================================================
+        self.shapley_values = self.shapley_values_auroc
+        self.shapley_std = self.shapley_std_auroc
+        self.shapley_se = self.shapley_se_auroc
+        self.shapley_ci_lower = self.shapley_ci_lower_auroc
+        self.shapley_ci_upper = self.shapley_ci_upper_auroc
 
         # Print summary statistics
         if show_progress:
             console.print("\n[bold green]Shapley Value Computation Complete[/bold green]")
             console.print(f"Total models trained: {total_iterations:,}")
-            console.print(f"\n[bold]Summary Statistics:[/bold]")
-            console.print(f"  Mean Shapley value: {np.mean(self.shapley_values):.6f}")
-            console.print(f"  Std Shapley value:  {np.std(self.shapley_values):.6f}")
-            console.print(f"  Min Shapley value:  {np.min(self.shapley_values):.6f}")
-            console.print(f"  Max Shapley value:  {np.max(self.shapley_values):.6f}")
+
+            # ===================================================================
+            # Display ROC-AUC Statistics
+            # ===================================================================
+            console.print(f"\n[bold cyan]ROC-AUC Metric:[/bold cyan]")
+            console.print(f"  Mean Shapley value: {np.mean(self.shapley_values_auroc):.6f}")
+            console.print(f"  Std Shapley value:  {np.std(self.shapley_values_auroc):.6f}")
+            console.print(f"  Min Shapley value:  {np.min(self.shapley_values_auroc):.6f}")
+            console.print(f"  Max Shapley value:  {np.max(self.shapley_values_auroc):.6f}")
             console.print(
-                f"  Mean uncertainty (SE): {np.mean(self.shapley_se):.6f}"
+                f"  Mean uncertainty (SE): {np.mean(self.shapley_se_auroc):.6f}"
             )
 
             # Count harmful vs beneficial points
-            n_harmful = np.sum(self.shapley_values < 0)
-            n_beneficial = np.sum(self.shapley_values > 0)
-            console.print(f"\n[bold]Value Distribution:[/bold]")
-            console.print(f"  Harmful points (SV < 0):    {n_harmful:,} "
-                         f"({100 * n_harmful / self.n_train:.1f}%)")
-            console.print(f"  Beneficial points (SV > 0): {n_beneficial:,} "
-                         f"({100 * n_beneficial / self.n_train:.1f}%)")
+            n_harmful_auroc = np.sum(self.shapley_values_auroc < 0)
+            n_beneficial_auroc = np.sum(self.shapley_values_auroc > 0)
+            console.print(f"\n  Value Distribution:")
+            console.print(f"    Harmful points (SV < 0):    {n_harmful_auroc:,} "
+                         f"({100 * n_harmful_auroc / self.n_train:.1f}%)")
+            console.print(f"    Beneficial points (SV > 0): {n_beneficial_auroc:,} "
+                         f"({100 * n_beneficial_auroc / self.n_train:.1f}%)")
 
-        return self.shapley_values
+            # ===================================================================
+            # Display Log-Loss Statistics
+            # ===================================================================
+            console.print(f"\n[bold magenta]Log-Loss Metric:[/bold magenta]")
+            console.print(f"  Mean Shapley value: {np.mean(self.shapley_values_logloss):.6f}")
+            console.print(f"  Std Shapley value:  {np.std(self.shapley_values_logloss):.6f}")
+            console.print(f"  Min Shapley value:  {np.min(self.shapley_values_logloss):.6f}")
+            console.print(f"  Max Shapley value:  {np.max(self.shapley_values_logloss):.6f}")
+            console.print(
+                f"  Mean uncertainty (SE): {np.mean(self.shapley_se_logloss):.6f}"
+            )
+
+            # Count harmful vs beneficial points
+            n_harmful_logloss = np.sum(self.shapley_values_logloss < 0)
+            n_beneficial_logloss = np.sum(self.shapley_values_logloss > 0)
+            console.print(f"\n  Value Distribution:")
+            console.print(f"    Harmful points (SV < 0):    {n_harmful_logloss:,} "
+                         f"({100 * n_harmful_logloss / self.n_train:.1f}%)")
+            console.print(f"    Beneficial points (SV > 0): {n_beneficial_logloss:,} "
+                         f"({100 * n_beneficial_logloss / self.n_train:.1f}%)")
+
+        return self.shapley_values_auroc  # Return ROC-AUC for backward compatibility
 
     def save_results(
         self,

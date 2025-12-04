@@ -362,9 +362,69 @@ def run_data_valuation(
         f"({100 * n_uncertain / valuator.n_train:.2f}%)"
     )
 
+    # ====================================================================
+    # Log-Loss Metric Statistics
+    # ====================================================================
+    console.print(f"\n[bold cyan]Log-Loss Metric Analysis:[/bold cyan]")
+
+    # Count negative (harmful) points for Log-Loss
+    n_negative_ll = np.sum(valuator.shapley_values_logloss < 0)
+    n_positive_ll = np.sum(valuator.shapley_values_logloss > 0)
+    n_zero_ll = np.sum(valuator.shapley_values_logloss == 0)
+
+    # Compute confidence intervals for proportions
+    neg_ci_lower_ll, neg_ci_upper_ll = _compute_proportion_ci(n_negative_ll, valuator.n_train)
+    pos_ci_lower_ll, pos_ci_upper_ll = _compute_proportion_ci(n_positive_ll, valuator.n_train)
+
+    console.print(f"\n[bold]Value Distribution:[/bold]")
+    console.print(
+        f"  Harmful (SV < 0):    {n_negative_ll:,} "
+        f"({100 * n_negative_ll / valuator.n_train:.2f}%) "
+        f"[95% CI: {neg_ci_lower_ll:.2f}%-{neg_ci_upper_ll:.2f}%]"
+    )
+    console.print(
+        f"  Beneficial (SV > 0): {n_positive_ll:,} "
+        f"({100 * n_positive_ll / valuator.n_train:.2f}%) "
+        f"[95% CI: {pos_ci_lower_ll:.2f}%-{pos_ci_upper_ll:.2f}%]"
+    )
+    console.print(
+        f"  Neutral (SV = 0):    {n_zero_ll:,} "
+        f"({100 * n_zero_ll / valuator.n_train:.2f}%)"
+    )
+
+    # Count RELIABLY negative/positive for Log-Loss
+    n_reliable_negative_ll = np.sum(valuator.shapley_ci_upper_logloss < 0)
+    n_reliable_positive_ll = np.sum(valuator.shapley_ci_lower_logloss > 0)
+    n_uncertain_ll = valuator.n_train - n_reliable_negative_ll - n_reliable_positive_ll
+
+    # Compute confidence intervals for reliable proportions
+    reliable_neg_ci_lower_ll, reliable_neg_ci_upper_ll = _compute_proportion_ci(
+        n_reliable_negative_ll, valuator.n_train
+    )
+    reliable_pos_ci_lower_ll, reliable_pos_ci_upper_ll = _compute_proportion_ci(
+        n_reliable_positive_ll, valuator.n_train
+    )
+
+    console.print(f"\n[bold]Statistical Confidence (95% CI-based):[/bold]")
+    console.print(
+        f"  Reliably harmful (CI upper < 0):    {n_reliable_negative_ll:,} "
+        f"({100 * n_reliable_negative_ll / valuator.n_train:.2f}%) "
+        f"[95% CI: {reliable_neg_ci_lower_ll:.2f}%-{reliable_neg_ci_upper_ll:.2f}%]"
+    )
+    console.print(
+        f"  Reliably beneficial (CI lower > 0): {n_reliable_positive_ll:,} "
+        f"({100 * n_reliable_positive_ll / valuator.n_train:.2f}%) "
+        f"[95% CI: {reliable_pos_ci_lower_ll:.2f}%-{reliable_pos_ci_upper_ll:.2f}%]"
+    )
+    console.print(
+        f"  Uncertain (CI spans 0):             {n_uncertain_ll:,} "
+        f"({100 * n_uncertain_ll / valuator.n_train:.2f}%)"
+    )
+
     # Summary statistics
     summary_stats = {
         "n_train": valuator.n_train,
+        # ROC-AUC metrics
         "n_harmful": n_negative,
         "n_beneficial": n_positive,
         "n_neutral": n_zero,
@@ -389,6 +449,31 @@ def run_data_valuation(
         "min_shapley": np.min(shapley_values),
         "max_shapley": np.max(shapley_values),
         "mean_uncertainty": np.mean(valuator.shapley_se),
+        # Log-Loss metrics
+        "n_harmful_logloss": n_negative_ll,
+        "n_beneficial_logloss": n_positive_ll,
+        "n_neutral_logloss": n_zero_ll,
+        "pct_harmful_logloss": 100 * n_negative_ll / valuator.n_train,
+        "pct_beneficial_logloss": 100 * n_positive_ll / valuator.n_train,
+        "harmful_ci_lower_logloss": neg_ci_lower_ll,
+        "harmful_ci_upper_logloss": neg_ci_upper_ll,
+        "beneficial_ci_lower_logloss": pos_ci_lower_ll,
+        "beneficial_ci_upper_logloss": pos_ci_upper_ll,
+        "n_reliable_harmful_logloss": n_reliable_negative_ll,
+        "n_reliable_beneficial_logloss": n_reliable_positive_ll,
+        "n_uncertain_logloss": n_uncertain_ll,
+        "pct_reliable_harmful_logloss": 100 * n_reliable_negative_ll / valuator.n_train,
+        "pct_reliable_beneficial_logloss": 100 * n_reliable_positive_ll / valuator.n_train,
+        "pct_uncertain_logloss": 100 * n_uncertain_ll / valuator.n_train,
+        "reliable_harmful_ci_lower_logloss": reliable_neg_ci_lower_ll,
+        "reliable_harmful_ci_upper_logloss": reliable_neg_ci_upper_ll,
+        "reliable_beneficial_ci_lower_logloss": reliable_pos_ci_lower_ll,
+        "reliable_beneficial_ci_upper_logloss": reliable_pos_ci_upper_ll,
+        "mean_shapley_logloss": np.mean(valuator.shapley_values_logloss),
+        "std_shapley_logloss": np.std(valuator.shapley_values_logloss),
+        "min_shapley_logloss": np.min(valuator.shapley_values_logloss),
+        "max_shapley_logloss": np.max(valuator.shapley_values_logloss),
+        "mean_uncertainty_logloss": np.mean(valuator.shapley_se_logloss),
     }
 
     console.print()
