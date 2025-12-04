@@ -480,6 +480,124 @@ def run_data_valuation(
         f"({100 * n_uncertain_f1 / valuator.n_train:.2f}%)"
     )
 
+    # ====================================================================
+    # Precision Metric Statistics
+    # ====================================================================
+    console.print(f"\n[bold green]Precision Metric Analysis:[/bold green]")
+
+    # Count negative (harmful) points for Precision
+    n_negative_prec = np.sum(valuator.shapley_values_precision < 0)
+    n_positive_prec = np.sum(valuator.shapley_values_precision > 0)
+    n_zero_prec = np.sum(valuator.shapley_values_precision == 0)
+
+    # Compute confidence intervals for proportions
+    neg_ci_lower_prec, neg_ci_upper_prec = _compute_proportion_ci(n_negative_prec, valuator.n_train)
+    pos_ci_lower_prec, pos_ci_upper_prec = _compute_proportion_ci(n_positive_prec, valuator.n_train)
+
+    console.print(f"\n[bold]Value Distribution:[/bold]")
+    console.print(
+        f"  Harmful (SV < 0):    {n_negative_prec:,} "
+        f"({100 * n_negative_prec / valuator.n_train:.2f}%) "
+        f"[95% CI: {neg_ci_lower_prec:.2f}%-{neg_ci_upper_prec:.2f}%]"
+    )
+    console.print(
+        f"  Beneficial (SV > 0): {n_positive_prec:,} "
+        f"({100 * n_positive_prec / valuator.n_train:.2f}%) "
+        f"[95% CI: {pos_ci_lower_prec:.2f}%-{pos_ci_upper_prec:.2f}%]"
+    )
+    console.print(
+        f"  Neutral (SV = 0):    {n_zero_prec:,} "
+        f"({100 * n_zero_prec / valuator.n_train:.2f}%)"
+    )
+
+    # Count RELIABLY negative/positive for Precision
+    n_reliable_negative_prec = np.sum(valuator.shapley_ci_upper_precision < 0)
+    n_reliable_positive_prec = np.sum(valuator.shapley_ci_lower_precision > 0)
+    n_uncertain_prec = valuator.n_train - n_reliable_negative_prec - n_reliable_positive_prec
+
+    # Compute confidence intervals for reliable proportions
+    reliable_neg_ci_lower_prec, reliable_neg_ci_upper_prec = _compute_proportion_ci(
+        n_reliable_negative_prec, valuator.n_train
+    )
+    reliable_pos_ci_lower_prec, reliable_pos_ci_upper_prec = _compute_proportion_ci(
+        n_reliable_positive_prec, valuator.n_train
+    )
+
+    console.print(f"\n[bold]Statistical Confidence (95% CI-based):[/bold]")
+    console.print(
+        f"  Reliably harmful (CI upper < 0):    {n_reliable_negative_prec:,} "
+        f"({100 * n_reliable_negative_prec / valuator.n_train:.2f}%) "
+        f"[95% CI: {reliable_neg_ci_lower_prec:.2f}%-{reliable_neg_ci_upper_prec:.2f}%]"
+    )
+    console.print(
+        f"  Reliably beneficial (CI lower > 0): {n_reliable_positive_prec:,} "
+        f"({100 * n_reliable_positive_prec / valuator.n_train:.2f}%) "
+        f"[95% CI: {reliable_pos_ci_lower_prec:.2f}%-{reliable_pos_ci_upper_prec:.2f}%]"
+    )
+    console.print(
+        f"  Uncertain (CI spans 0):             {n_uncertain_prec:,} "
+        f"({100 * n_uncertain_prec / valuator.n_train:.2f}%)"
+    )
+
+    # ====================================================================
+    # Recall Metric Statistics
+    # ====================================================================
+    console.print(f"\n[bold blue]Recall Metric Analysis:[/bold blue]")
+
+    # Count negative (harmful) points for Recall
+    n_negative_rec = np.sum(valuator.shapley_values_recall < 0)
+    n_positive_rec = np.sum(valuator.shapley_values_recall > 0)
+    n_zero_rec = np.sum(valuator.shapley_values_recall == 0)
+
+    # Compute confidence intervals for proportions
+    neg_ci_lower_rec, neg_ci_upper_rec = _compute_proportion_ci(n_negative_rec, valuator.n_train)
+    pos_ci_lower_rec, pos_ci_upper_rec = _compute_proportion_ci(n_positive_rec, valuator.n_train)
+
+    console.print(f"\n[bold]Value Distribution:[/bold]")
+    console.print(
+        f"  Harmful (SV < 0):    {n_negative_rec:,} "
+        f"({100 * n_negative_rec / valuator.n_train:.2f}%) "
+        f"[95% CI: {neg_ci_lower_rec:.2f}%-{neg_ci_upper_rec:.2f}%]"
+    )
+    console.print(
+        f"  Beneficial (SV > 0): {n_positive_rec:,} "
+        f"({100 * n_positive_rec / valuator.n_train:.2f}%) "
+        f"[95% CI: {pos_ci_lower_rec:.2f}%-{pos_ci_upper_rec:.2f}%]"
+    )
+    console.print(
+        f"  Neutral (SV = 0):    {n_zero_rec:,} "
+        f"({100 * n_zero_rec / valuator.n_train:.2f}%)"
+    )
+
+    # Count RELIABLY negative/positive for Recall
+    n_reliable_negative_rec = np.sum(valuator.shapley_ci_upper_recall < 0)
+    n_reliable_positive_rec = np.sum(valuator.shapley_ci_lower_recall > 0)
+    n_uncertain_rec = valuator.n_train - n_reliable_negative_rec - n_reliable_positive_rec
+
+    # Compute confidence intervals for reliable proportions
+    reliable_neg_ci_lower_rec, reliable_neg_ci_upper_rec = _compute_proportion_ci(
+        n_reliable_negative_rec, valuator.n_train
+    )
+    reliable_pos_ci_lower_rec, reliable_pos_ci_upper_rec = _compute_proportion_ci(
+        n_reliable_positive_rec, valuator.n_train
+    )
+
+    console.print(f"\n[bold]Statistical Confidence (95% CI-based):[/bold]")
+    console.print(
+        f"  Reliably harmful (CI upper < 0):    {n_reliable_negative_rec:,} "
+        f"({100 * n_reliable_negative_rec / valuator.n_train:.2f}%) "
+        f"[95% CI: {reliable_neg_ci_lower_rec:.2f}%-{reliable_neg_ci_upper_rec:.2f}%]"
+    )
+    console.print(
+        f"  Reliably beneficial (CI lower > 0): {n_reliable_positive_rec:,} "
+        f"({100 * n_reliable_positive_rec / valuator.n_train:.2f}%) "
+        f"[95% CI: {reliable_pos_ci_lower_rec:.2f}%-{reliable_pos_ci_upper_rec:.2f}%]"
+    )
+    console.print(
+        f"  Uncertain (CI spans 0):             {n_uncertain_rec:,} "
+        f"({100 * n_uncertain_rec / valuator.n_train:.2f}%)"
+    )
+
     # Summary statistics
     summary_stats = {
         "n_train": valuator.n_train,
@@ -558,6 +676,56 @@ def run_data_valuation(
         "min_shapley_f1": np.min(valuator.shapley_values_f1),
         "max_shapley_f1": np.max(valuator.shapley_values_f1),
         "mean_uncertainty_f1": np.mean(valuator.shapley_se_f1),
+        # Precision metrics
+        "n_harmful_precision": n_negative_prec,
+        "n_beneficial_precision": n_positive_prec,
+        "n_neutral_precision": n_zero_prec,
+        "pct_harmful_precision": 100 * n_negative_prec / valuator.n_train,
+        "pct_beneficial_precision": 100 * n_positive_prec / valuator.n_train,
+        "harmful_ci_lower_precision": neg_ci_lower_prec,
+        "harmful_ci_upper_precision": neg_ci_upper_prec,
+        "beneficial_ci_lower_precision": pos_ci_lower_prec,
+        "beneficial_ci_upper_precision": pos_ci_upper_prec,
+        "n_reliable_harmful_precision": n_reliable_negative_prec,
+        "n_reliable_beneficial_precision": n_reliable_positive_prec,
+        "n_uncertain_precision": n_uncertain_prec,
+        "pct_reliable_harmful_precision": 100 * n_reliable_negative_prec / valuator.n_train,
+        "pct_reliable_beneficial_precision": 100 * n_reliable_positive_prec / valuator.n_train,
+        "pct_uncertain_precision": 100 * n_uncertain_prec / valuator.n_train,
+        "reliable_harmful_ci_lower_precision": reliable_neg_ci_lower_prec,
+        "reliable_harmful_ci_upper_precision": reliable_neg_ci_upper_prec,
+        "reliable_beneficial_ci_lower_precision": reliable_pos_ci_lower_prec,
+        "reliable_beneficial_ci_upper_precision": reliable_pos_ci_upper_prec,
+        "mean_shapley_precision": np.mean(valuator.shapley_values_precision),
+        "std_shapley_precision": np.std(valuator.shapley_values_precision),
+        "min_shapley_precision": np.min(valuator.shapley_values_precision),
+        "max_shapley_precision": np.max(valuator.shapley_values_precision),
+        "mean_uncertainty_precision": np.mean(valuator.shapley_se_precision),
+        # Recall metrics
+        "n_harmful_recall": n_negative_rec,
+        "n_beneficial_recall": n_positive_rec,
+        "n_neutral_recall": n_zero_rec,
+        "pct_harmful_recall": 100 * n_negative_rec / valuator.n_train,
+        "pct_beneficial_recall": 100 * n_positive_rec / valuator.n_train,
+        "harmful_ci_lower_recall": neg_ci_lower_rec,
+        "harmful_ci_upper_recall": neg_ci_upper_rec,
+        "beneficial_ci_lower_recall": pos_ci_lower_rec,
+        "beneficial_ci_upper_recall": pos_ci_upper_rec,
+        "n_reliable_harmful_recall": n_reliable_negative_rec,
+        "n_reliable_beneficial_recall": n_reliable_positive_rec,
+        "n_uncertain_recall": n_uncertain_rec,
+        "pct_reliable_harmful_recall": 100 * n_reliable_negative_rec / valuator.n_train,
+        "pct_reliable_beneficial_recall": 100 * n_reliable_positive_rec / valuator.n_train,
+        "pct_uncertain_recall": 100 * n_uncertain_rec / valuator.n_train,
+        "reliable_harmful_ci_lower_recall": reliable_neg_ci_lower_rec,
+        "reliable_harmful_ci_upper_recall": reliable_neg_ci_upper_rec,
+        "reliable_beneficial_ci_lower_recall": reliable_pos_ci_lower_rec,
+        "reliable_beneficial_ci_upper_recall": reliable_pos_ci_upper_rec,
+        "mean_shapley_recall": np.mean(valuator.shapley_values_recall),
+        "std_shapley_recall": np.std(valuator.shapley_values_recall),
+        "min_shapley_recall": np.min(valuator.shapley_values_recall),
+        "max_shapley_recall": np.max(valuator.shapley_values_recall),
+        "mean_uncertainty_recall": np.mean(valuator.shapley_se_recall),
     }
 
     console.print()
