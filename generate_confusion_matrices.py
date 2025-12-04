@@ -251,8 +251,8 @@ def main():
     parser.add_argument(
         "--gen2-train",
         type=Path,
-        required=True,
-        help="Path to Gen2 training data CSV",
+        required=False,
+        help="Path to Gen2 training data CSV (optional for comparison)",
     )
     parser.add_argument(
         "--test-file",
@@ -308,24 +308,29 @@ def main():
         args.random_state,
     )
 
-    # Train and evaluate on Gen2 data
-    console.print("\n[bold magenta]Processing Gen2 Data...[/bold magenta]")
-    gen2_results = train_and_evaluate(
-        args.gen2_train,
-        args.test_file,
-        args.encoding_config,
-        lgbm_params,
-        args.target_column,
-        args.threshold,
-        args.random_state,
-    )
-
-    # Print results
+    # Print Real results
     print_confusion_matrix("Real Data (Gen0)", real_results)
-    print_confusion_matrix("Gen2 Data (Synthetic)", gen2_results)
 
-    # Compare
-    compare_confusion_matrices("Real", real_results, "Gen2", gen2_results)
+    # Train and evaluate on Gen2 data if provided
+    if args.gen2_train:
+        console.print("\n[bold magenta]Processing Gen2 Data...[/bold magenta]")
+        gen2_results = train_and_evaluate(
+            args.gen2_train,
+            args.test_file,
+            args.encoding_config,
+            lgbm_params,
+            args.target_column,
+            args.threshold,
+            args.random_state,
+        )
+
+        # Print Gen2 results
+        print_confusion_matrix("Gen2 Data (Synthetic)", gen2_results)
+
+        # Compare
+        compare_confusion_matrices("Real", real_results, "Gen2", gen2_results)
+    else:
+        console.print("\n[dim]No Gen2 data provided - skipping comparison[/dim]")
 
     console.print("\n[bold green]✓ Analysis Complete![/bold green]\n")
 
