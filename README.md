@@ -320,6 +320,66 @@ Synthetic point creates leaf → Real test data falls (or doesn't fall) into tha
 → Low utility = Hallucinated point that created wrong decision boundaries
 ```
 
+### Evaluation-Based with Implicit Counterfactual Reasoning
+
+**Primary Mechanism: Alignment Evaluation**
+
+The leaf co-occurrence method is fundamentally **evaluation-based** rather than explicitly counterfactual:
+
+```python
+# What actually happens (one training run)
+model = train(synthetic_data)  # Train once on all synthetic points
+structure = model.get_decision_boundaries()  # Extract learned structure
+
+# Evaluate the learned structure
+for each boundary:
+    utility = does_it_work_for_real_data(boundary)
+    assign_utility_to(synthetic_points_that_created_boundary)
+```
+
+**Implicit Counterfactual Evidence**
+
+While not explicitly counterfactual, the method provides **implicit counterfactual reasoning**:
+
+```
+Factual observation:
+  "Synthetic point X created leaf L with these boundaries"
+  → Real data in leaf L gets misclassified
+  → Utility score: -0.015 (harmful)
+
+Implicit counterfactual:
+  "Without point X (or with better synthetic data)..."
+  → Different boundaries would have formed
+  → Real data might be correctly classified
+  → Evidence: Current boundaries don't work
+```
+
+**Contrast with Explicit Counterfactuals (Shapley)**
+
+| Aspect | Shapley (Explicit Counterfactual) | Leaf Co-Occurrence (Evaluation-Based) |
+|--------|----------------------------------|--------------------------------------|
+| **Comparison** | Train WITH vs WITHOUT each point | Evaluate structure created WITH all points |
+| **Training runs** | O(n × samples) ≈ millions | O(1) = once |
+| **Evidence type** | Direct performance difference | Structural quality assessment |
+| **Question** | "What's the marginal contribution?" | "Does the learned structure generalize?" |
+| **Runtime** | ~90 minutes | ~5 minutes |
+
+**Why This Distinction Matters**
+
+1. **Computational efficiency**: Single training run vs. millions
+2. **Different perspectives**:
+   - Shapley measures point-level marginal contribution (individual quality)
+   - Leaf alignment measures structural generalization (collective quality)
+3. **Complementary insights**: Shapley can miss distributional issues that leaf alignment catches
+
+**Describing the Method**
+
+Most accurate description:
+> "An **alignment-based evaluation** method that measures whether synthetic training points create decision boundaries that generalize to real data patterns, with **implicit counterfactual reasoning** about what better boundaries would look like."
+
+Alternative framing emphasizing the counterfactual aspect:
+> "Through structural evaluation, provides **implicit counterfactual evidence**: synthetic points creating boundaries that fail on real data suggest better data would create boundaries that succeed."
+
 ### Usage
 
 #### Basic Leaf Co-Occurrence Analysis
