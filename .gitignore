@@ -44,6 +44,8 @@ uv.lock
 experiments/
 output/
 data/
+real_package/
+test_package/
 *.csv
 *.json
 # Keep pyproject.toml
