@@ -4,7 +4,7 @@ Hyperparameter tuning for LightGBM using Optuna (Bayesian Optimization).
 Self-contained module for optimizing LGBM hyperparameters with cross-validation.
 """
 
-from typing import Dict, Any
+from typing import Dict, Any, Literal
 import warnings
 
 import numpy as np
@@ -12,8 +12,8 @@ import pandas as pd
 import lightgbm as lgb
 import optuna
 from optuna.samplers import TPESampler
-from sklearn.model_selection import StratifiedKFold
-from sklearn.metrics import roc_auc_score
+from sklearn.model_selection import StratifiedKFold, cross_val_predict
+from sklearn.metrics import roc_auc_score, f1_score, precision_score, recall_score
 
 warnings.filterwarnings('ignore')
 
@@ -217,16 +217,106 @@ class LGBMTuner:
         return lgbm_params
 
 
+def find_optimal_threshold(
+    y_true: np.ndarray,
+    y_pred_proba: np.ndarray,
+    metric: Literal['f1', 'precision', 'recall', 'youden'] = 'f1',
+) -> float:
+    """
+    Find optimal classification threshold.
+
+    Args:
+        y_true: True labels
+        y_pred_proba: Predicted probabilities
+        metric: Metric to optimize ('f1', 'precision', 'recall', 'youden')
+
+    Returns:
+        Optimal threshold
+    """
+    thresholds = np.arange(0.1, 0.9, 0.02)
+    best_score = -np.inf
+    best_threshold = 0.5
+
+    for threshold in thresholds:
+        y_pred = (y_pred_proba >= threshold).astype(int)
+
+        if metric == 'f1':
+            score = f1_score(y_true, y_pred, zero_division=0)
+        elif metric == 'precision':
+            score = precision_score(y_true, y_pred, zero_division=0)
+        elif metric == 'recall':
+            score = recall_score(y_true, y_pred, zero_division=0)
+        elif metric == 'youden':
+            # Youden's J statistic: Sensitivity + Specificity - 1
+            tn = np.sum((y_pred == 0) & (y_true == 0))
+            fp = np.sum((y_pred == 1) & (y_true == 0))
+            fn = np.sum((y_pred == 0) & (y_true == 1))
+            tp = np.sum((y_pred == 1) & (y_true == 1))
+            sensitivity = tp / (tp + fn) if (tp + fn) > 0 else 0
+            specificity = tn / (tn + fp) if (tn + fp) > 0 else 0
+            score = sensitivity + specificity - 1
+        else:
+            raise ValueError(f"Unknown metric: {metric}")
+
+        if score > best_score:
+            best_score = score
+            best_threshold = threshold
+
+    return best_threshold
+
+
+def get_cv_predictions(
+    X_train: pd.DataFrame,
+    y_train: pd.Series,
+    params: Dict[str, Any],
+    n_folds: int = 5,
+    random_state: int = 42,
+) -> np.ndarray:
+    """
+    Get cross-validated predictions for threshold optimization.
+
+    Args:
+        X_train: Training features
+        y_train: Training labels
+        params: LightGBM parameters
+        n_folds: Number of CV folds
+        random_state: Random seed
+
+    Returns:
+        Array of predicted probabilities for each sample
+    """
+    # Prepare parameters
+    lgbm_params = params.copy()
+    lgbm_params.pop('imbalance_method', None)
+    lgbm_params.pop('early_stopping_rounds', None)
+
+    # Create model
+    from lightgbm import LGBMClassifier
+    model = LGBMClassifier(**lgbm_params, random_state=random_state, verbose=-1)
+
+    # Get cross-validated predictions
+    cv = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=random_state)
+    y_pred_proba = cross_val_predict(
+        model, X_train, y_train,
+        cv=cv,
+        method='predict_proba'
+    )[:, 1]  # Get probability for positive class
+
+    return y_pred_proba
+
+
 def tune_hyperparameters(
     X_train: pd.DataFrame,
     y_train: pd.Series,
     n_trials: int = 100,
     n_folds: int = 5,
     timeout: int = None,
+    threshold_metric: Literal['f1', 'precision', 'recall', 'youden'] = 'f1',
+    optimize_threshold: bool = True,
     random_state: int = 42,
 ) -> Dict[str, Any]:
     """
-    Convenience function to tune LGBM hyperparameters.
+    Tune LGBM hyperparameters and optionally find optimal threshold.
 
     Args:
         X_train: Training features
@@ -234,10 +324,12 @@ def tune_hyperparameters(
         n_trials: Number of Optuna trials
         n_folds: Number of CV folds
         timeout: Timeout in seconds (None = no limit)
+        threshold_metric: Metric to optimize threshold for ('f1', 'precision', 'recall', 'youden')
+        optimize_threshold: Whether to find optimal threshold via CV
         random_state: Random seed
 
     Returns:
-        Dictionary containing best parameters and CV score
+        Dictionary containing best parameters, CV score, and optional threshold
     """
     tuner = LGBMTuner(
         X_train=X_train,
@@ -250,9 +342,34 @@ def tune_hyperparameters(
     best_params = tuner.tune(timeout=timeout)
     lgbm_params = tuner.get_lgbm_params()
 
-    return {
+    result = {
         'best_params': lgbm_params,
         'cv_score': tuner.best_score,
         'n_trials': n_trials,
         'n_folds': n_folds,
     }
+
+    # Optimize threshold if requested
+    if optimize_threshold:
+        # Get CV predictions with best hyperparameters
+        y_pred_proba = get_cv_predictions(
+            X_train, y_train,
+            lgbm_params,
+            n_folds=n_folds,
+            random_state=random_state
+        )
+
+        # Find optimal threshold
+        optimal_threshold = find_optimal_threshold(
+            y_train.values,
+            y_pred_proba,
+            metric=threshold_metric
+        )
+
+        result['threshold'] = float(optimal_threshold)
+        result['threshold_metric'] = threshold_metric
+    else:
+        result['threshold'] = 0.5
+        result['threshold_metric'] = 'default'
+
+    return result

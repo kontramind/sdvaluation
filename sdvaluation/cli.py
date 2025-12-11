@@ -265,6 +265,11 @@ def dual_evaluation(
         "-o",
         help="Output directory for results",
     ),
+    threshold_metric: str = typer.Option(
+        "f1",
+        "--threshold-metric",
+        help="Metric to optimize classification threshold: f1, precision, recall, youden",
+    ),
     no_leaf_alignment: bool = typer.Option(
         False,
         "--no-leaf-alignment",
@@ -292,12 +297,14 @@ def dual_evaluation(
 
     The evaluation includes:
     - Hyperparameter tuning on both 40k and 10k datasets
+    - Threshold optimization via CV (default: F1 score)
     - Performance comparison (Real vs Synth) in both scenarios
-    - Transfer gap analysis (40k params vs 10k params on real data)
+    - Transfer gap analysis (params and thresholds)
     - Optional: Leaf alignment analysis for harmful point detection
 
     Example usage:
 
+        # Basic usage with default F1 threshold optimization
         sdvaluation dual-eval \\
             --tuning-data population_40k.csv \\
             --real-train real_train_10k.csv \\
@@ -307,14 +314,23 @@ def dual_evaluation(
             --n-trials 100 \\
             --output-dir experiments/dual_eval
 
+        # Optimize for recall (medical use case - minimize false negatives)
+        sdvaluation dual-eval \\
+            --tuning-data population_40k.csv \\
+            --real-train real_train_10k.csv \\
+            --synth-train synth_train_10k.csv \\
+            --real-test real_test_10k.csv \\
+            --encoding-config encoding.yaml \\
+            --threshold-metric recall
+
     Output files:
-        - params_40k_*.json: Hyperparameters from 40k tuning
-        - params_10k_*.json: Hyperparameters from 10k tuning
-        - scenario_1_optimal_*.json: Results with 10k-tuned params
-        - scenario_2_deployment_*.json: Results with 40k-tuned params
+        - params_40k_*.json: Hyperparameters + threshold from 40k tuning
+        - params_10k_*.json: Hyperparameters + threshold from 10k tuning
+        - scenario_1_optimal_*.json: Results with 10k-tuned params/threshold
+        - scenario_2_deployment_*.json: Results with 40k-tuned params/threshold
         - leaf_alignment_10k_params_*.csv: Harmful detection (10k params)
         - leaf_alignment_40k_params_*.csv: Harmful detection (40k params)
-        - summary_*.json: Overall summary
+        - summary_*.json: Overall summary with threshold gaps
     """
     from .dual_evaluation import run_dual_evaluation
 
@@ -333,6 +349,7 @@ def dual_evaluation(
             output_dir=output_dir,
             n_trials=n_trials,
             n_folds=n_folds,
+            threshold_metric=threshold_metric,
             run_leaf_alignment=not no_leaf_alignment,
             random_state=random_state,
         )

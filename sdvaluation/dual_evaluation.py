@@ -300,6 +300,7 @@ def run_dual_evaluation(
     output_dir: Optional[Path] = None,
     n_trials: int = 100,
     n_folds: int = 5,
+    threshold_metric: str = 'f1',
     run_leaf_alignment: bool = True,
     random_state: int = 42,
 ) -> Dict[str, Any]:
@@ -319,6 +320,7 @@ def run_dual_evaluation(
         output_dir: Output directory for results
         n_trials: Number of Optuna trials
         n_folds: Number of CV folds
+        threshold_metric: Metric to optimize threshold ('f1', 'precision', 'recall', 'youden')
         run_leaf_alignment: Whether to run leaf alignment analysis
         random_state: Random seed
 
@@ -385,20 +387,27 @@ def run_dual_evaluation(
     # Tune on 40k
     console.print("[bold][1/2] Tuning on 40k Population Data[/bold]")
     console.print(f"  Running {n_trials} Optuna trials with {n_folds}-fold CV...")
+    console.print(f"  Optimizing threshold for: {threshold_metric}")
     result_40k = tune_hyperparameters(
         X_tuning, y_tuning,
         n_trials=n_trials,
         n_folds=n_folds,
+        threshold_metric=threshold_metric,
+        optimize_threshold=True,
         random_state=random_state
     )
     params_40k = result_40k['best_params']
+    threshold_40k = result_40k['threshold']
     console.print(f"  [green]✓ Best CV AUROC: {result_40k['cv_score']:.4f}[/green]")
+    console.print(f"  [green]✓ Optimal threshold: {threshold_40k:.3f}[/green]")
 
     # Save params_40k
     params_40k_file = output_dir / f"params_40k_{timestamp}.json"
     with open(params_40k_file, 'w') as f:
         json.dump({
             'params': params_40k,
+            'threshold': threshold_40k,
+            'threshold_metric': threshold_metric,
             'cv_score': result_40k['cv_score'],
             'n_trials': n_trials,
             'n_folds': n_folds,
@@ -409,26 +418,40 @@ def run_dual_evaluation(
     # Tune on 10k
     console.print("\n[bold][2/2] Tuning on 10k Real Train[/bold]")
     console.print(f"  Running {n_trials} Optuna trials with {n_folds}-fold CV...")
+    console.print(f"  Optimizing threshold for: {threshold_metric}")
     result_10k = tune_hyperparameters(
         X_real_train, y_real_train,
         n_trials=n_trials,
         n_folds=n_folds,
+        threshold_metric=threshold_metric,
+        optimize_threshold=True,
         random_state=random_state
     )
     params_10k = result_10k['best_params']
+    threshold_10k = result_10k['threshold']
     console.print(f"  [green]✓ Best CV AUROC: {result_10k['cv_score']:.4f}[/green]")
+    console.print(f"  [green]✓ Optimal threshold: {threshold_10k:.3f}[/green]")
 
     # Save params_10k
     params_10k_file = output_dir / f"params_10k_{timestamp}.json"
     with open(params_10k_file, 'w') as f:
         json.dump({
             'params': params_10k,
+            'threshold': threshold_10k,
+            'threshold_metric': threshold_metric,
             'cv_score': result_10k['cv_score'],
             'n_trials': n_trials,
             'n_folds': n_folds,
             'source': 'real_train_10k',
         }, f, indent=2)
     console.print(f"  [green]✓ Saved: {params_10k_file.name}[/green]")
+
+    # Display threshold comparison
+    threshold_gap = abs(threshold_10k - threshold_40k)
+    console.print(f"\n[bold]Threshold Comparison:[/bold]")
+    console.print(f"  40k-optimized: {threshold_40k:.3f}")
+    console.print(f"  10k-optimized: {threshold_10k:.3f}")
+    console.print(f"  Gap: {threshold_gap:.3f}")
 
     # ========================================================================
     # Step 3: Scenario 1 - Optimal (10k-tuned params)
@@ -438,18 +461,22 @@ def run_dual_evaluation(
     console.print(f"[bold cyan]{'═' * 70}[/bold cyan]\n")
 
     console.print("[bold]Training on Real (10k) → Test on Real (10k)[/bold]")
+    console.print(f"  Using threshold: {threshold_10k:.3f}")
     real_perf_10k = train_and_evaluate(
         X_real_train, y_real_train,
         X_real_test, y_real_test,
         params_10k,
+        threshold=threshold_10k,
         random_state=random_state
     )
 
     console.print("[bold]Training on Synth (10k) → Test on Real (10k)[/bold]")
+    console.print(f"  Using threshold: {threshold_10k:.3f}")
     synth_perf_10k = train_and_evaluate(
         X_synth_train, y_synth_train,
         X_real_test, y_real_test,
         params_10k,
+        threshold=threshold_10k,
         random_state=random_state
     )
 
@@ -477,18 +504,22 @@ def run_dual_evaluation(
     console.print(f"[bold cyan]{'═' * 70}[/bold cyan]\n")
 
     console.print("[bold]Training on Real (10k) → Test on Real (10k)[/bold]")
+    console.print(f"  Using threshold: {threshold_40k:.3f}")
     real_perf_40k = train_and_evaluate(
         X_real_train, y_real_train,
         X_real_test, y_real_test,
         params_40k,
+        threshold=threshold_40k,
         random_state=random_state
     )
 
     console.print("[bold]Training on Synth (10k) → Test on Real (10k)[/bold]")
+    console.print(f"  Using threshold: {threshold_40k:.3f}")
     synth_perf_40k = train_and_evaluate(
         X_synth_train, y_synth_train,
         X_real_test, y_real_test,
         params_40k,
+        threshold=threshold_40k,
         random_state=random_state
     )
 
@@ -583,15 +614,19 @@ def run_dual_evaluation(
     # Save summary
     summary = {
         'timestamp': timestamp,
+        'threshold_metric': threshold_metric,
         'transfer_gap': transfer_gap,
+        'threshold_gap': threshold_gap,
         'scenario_1_optimal': {
             'params_source': 'real_train_10k',
+            'threshold': threshold_10k,
             'real_auroc': real_perf_10k['auroc'],
             'synth_auroc': synth_perf_10k['auroc'],
             'gap': synth_gap_10k,
         },
         'scenario_2_deployment': {
             'params_source': 'tuning_data_40k',
+            'threshold': threshold_40k,
             'real_auroc': real_perf_40k['auroc'],
             'synth_auroc': synth_perf_40k['auroc'],
             'gap': synth_gap_40k,
