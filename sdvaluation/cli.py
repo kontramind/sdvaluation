@@ -275,6 +275,12 @@ def dual_evaluation(
         "--no-leaf-alignment",
         help="Skip leaf alignment analysis (harmful detection)",
     ),
+    leaf_n_estimators: int = typer.Option(
+        500,
+        "--leaf-n-estimators",
+        help="Number of trees for leaf alignment (more = tighter CIs, default: 500)",
+        min=100,
+    ),
     random_state: int = typer.Option(
         42,
         "--seed",
@@ -351,6 +357,7 @@ def dual_evaluation(
             n_folds=n_folds,
             threshold_metric=threshold_metric,
             run_leaf_alignment=not no_leaf_alignment,
+            leaf_n_estimators=leaf_n_estimators,
             random_state=random_state,
         )
 

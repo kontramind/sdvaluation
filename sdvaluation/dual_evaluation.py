@@ -302,6 +302,7 @@ def run_dual_evaluation(
     n_folds: int = 5,
     threshold_metric: str = 'f1',
     run_leaf_alignment: bool = True,
+    leaf_n_estimators: int = 500,
     random_state: int = 42,
 ) -> Dict[str, Any]:
     """
@@ -322,6 +323,7 @@ def run_dual_evaluation(
         n_folds: Number of CV folds
         threshold_metric: Metric to optimize threshold ('f1', 'precision', 'recall', 'youden')
         run_leaf_alignment: Whether to run leaf alignment analysis
+        leaf_n_estimators: Number of trees for leaf alignment (more = tighter CIs)
         random_state: Random seed
 
     Returns:
@@ -564,6 +566,7 @@ def run_dual_evaluation(
             X_real_test, y_real_test,
             params_10k,
             output_file=leaf_10k_file,
+            n_estimators=leaf_n_estimators,
             random_state=random_state
         )
         console.print(f"  [green]✓ Saved: {leaf_10k_file.name}[/green]")
@@ -577,6 +580,7 @@ def run_dual_evaluation(
             X_real_test, y_real_test,
             params_40k,
             output_file=leaf_40k_file,
+            n_estimators=leaf_n_estimators,
             random_state=random_state
         )
         console.print(f"  [green]✓ Saved: {leaf_40k_file.name}[/green]")
