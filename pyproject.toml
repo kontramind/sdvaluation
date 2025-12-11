@@ -24,6 +24,7 @@ dependencies = [
     "rdt>=1.0.0",
     "pyyaml>=6.0",
     "joblib>=1.3.0",
+    "optuna>=3.0.0",
 ]
 
 [project.scripts]

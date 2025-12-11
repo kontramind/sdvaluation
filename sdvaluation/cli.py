@@ -192,5 +192,158 @@ def data_valuation_mimic_iii(
         raise typer.Exit(code=1)
 
 
+@app.command(name="dual-eval")
+def dual_evaluation(
+    tuning_data: Path = typer.Option(
+        ...,
+        "--tuning-data",
+        help="Path to 40k population data CSV for hyperparameter tuning",
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+        readable=True,
+    ),
+    real_train: Path = typer.Option(
+        ...,
+        "--real-train",
+        help="Path to 10k real training CSV file",
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+        readable=True,
+    ),
+    synth_train: Path = typer.Option(
+        ...,
+        "--synth-train",
+        help="Path to 10k synthetic training CSV file",
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+        readable=True,
+    ),
+    real_test: Path = typer.Option(
+        ...,
+        "--real-test",
+        help="Path to 10k real test CSV file",
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+        readable=True,
+    ),
+    target_column: str = typer.Option(
+        "IS_READMISSION_30D",
+        "-c",
+        "--target-column",
+        help="Name of the target column",
+    ),
+    encoding_config: Path = typer.Option(
+        ...,
+        "--encoding-config",
+        help="Path to RDT encoding configuration YAML file",
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+        readable=True,
+    ),
+    n_trials: int = typer.Option(
+        100,
+        "--n-trials",
+        "-n",
+        help="Number of Bayesian optimization trials",
+        min=10,
+    ),
+    n_folds: int = typer.Option(
+        5,
+        "--n-folds",
+        "-k",
+        help="Number of cross-validation folds",
+        min=2,
+    ),
+    output_dir: Path = typer.Option(
+        Path("experiments/dual_eval"),
+        "--output-dir",
+        "-o",
+        help="Output directory for results",
+    ),
+    no_leaf_alignment: bool = typer.Option(
+        False,
+        "--no-leaf-alignment",
+        help="Skip leaf alignment analysis (harmful detection)",
+    ),
+    random_state: int = typer.Option(
+        42,
+        "--seed",
+        "-s",
+        help="Random seed for reproducibility",
+    ),
+) -> None:
+    """
+    Run dual scenario evaluation for synthetic data quality assessment.
+
+    This command compares synthetic data performance under two scenarios:
+
+    Scenario 1 (Optimal): Hyperparameters tuned on 10k real training data
+    - Best case performance for both real and synthetic
+    - Shows ceiling of synthetic data quality
+
+    Scenario 2 (Deployment): Hyperparameters tuned on 40k population data
+    - Realistic deployment scenario with distribution shift
+    - Tests robustness of synthetic data to parameter transfer
+
+    The evaluation includes:
+    - Hyperparameter tuning on both 40k and 10k datasets
+    - Performance comparison (Real vs Synth) in both scenarios
+    - Transfer gap analysis (40k params vs 10k params on real data)
+    - Optional: Leaf alignment analysis for harmful point detection
+
+    Example usage:
+
+        sdvaluation dual-eval \\
+            --tuning-data population_40k.csv \\
+            --real-train real_train_10k.csv \\
+            --synth-train synth_train_10k.csv \\
+            --real-test real_test_10k.csv \\
+            --encoding-config encoding.yaml \\
+            --n-trials 100 \\
+            --output-dir experiments/dual_eval
+
+    Output files:
+        - params_40k_*.json: Hyperparameters from 40k tuning
+        - params_10k_*.json: Hyperparameters from 10k tuning
+        - scenario_1_optimal_*.json: Results with 10k-tuned params
+        - scenario_2_deployment_*.json: Results with 40k-tuned params
+        - leaf_alignment_10k_params_*.csv: Harmful detection (10k params)
+        - leaf_alignment_40k_params_*.csv: Harmful detection (40k params)
+        - summary_*.json: Overall summary
+    """
+    from .dual_evaluation import run_dual_evaluation
+
+    try:
+        console.print("\n[bold]Dual Scenario Evaluation[/bold]")
+        console.print("=" * 60)
+
+        # Run dual evaluation
+        results = run_dual_evaluation(
+            tuning_data=tuning_data,
+            real_train=real_train,
+            synth_train=synth_train,
+            real_test=real_test,
+            target_column=target_column,
+            encoding_config=encoding_config,
+            output_dir=output_dir,
+            n_trials=n_trials,
+            n_folds=n_folds,
+            run_leaf_alignment=not no_leaf_alignment,
+            random_state=random_state,
+        )
+
+        console.print("\n" + "=" * 60)
+        console.print("[bold green]✓ Dual evaluation completed successfully![/bold green]\n")
+
+    except Exception as e:
+        console.print(f"\n[bold red]Error during dual evaluation:[/bold red] {e}\n")
+        raise typer.Exit(code=1)
+
+
 if __name__ == "__main__":
     app()
