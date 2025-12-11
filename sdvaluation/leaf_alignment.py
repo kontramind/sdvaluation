@@ -10,6 +10,7 @@ from typing import Dict, Tuple, Optional
 
 import numpy as np
 import pandas as pd
+from joblib import Parallel, delayed
 from lightgbm import LGBMClassifier
 from rich.console import Console
 from scipy import stats
@@ -73,12 +74,87 @@ def get_leaf_value_from_tree(tree_node: dict, target_leaf_id: int) -> float:
     return right_val
 
 
+def process_single_tree(
+    tree_k: int,
+    tree_dump: dict,
+    synthetic_leaves_k: np.ndarray,
+    real_leaves_k: np.ndarray,
+    y_real_test: np.ndarray,
+    n_synthetic: int,
+    n_real_test: int,
+    empty_leaf_penalty: float,
+) -> np.ndarray:
+    """
+    Process a single tree and compute utility scores for synthetic points.
+
+    Args:
+        tree_k: Tree index
+        tree_dump: Tree structure from booster dump
+        synthetic_leaves_k: Leaf assignments for synthetic points in this tree
+        real_leaves_k: Leaf assignments for real test points in this tree
+        y_real_test: Real test labels
+        n_synthetic: Number of synthetic points
+        n_real_test: Number of real test points
+        empty_leaf_penalty: Penalty for leaves with no real data
+
+    Returns:
+        Utility scores for this tree (shape: [n_synthetic])
+    """
+    utility_scores = np.zeros(n_synthetic)
+
+    # Get unique leaves that contain real data
+    unique_leaves = np.unique(real_leaves_k)
+
+    for leaf_id in unique_leaves:
+        # Find real points in this leaf
+        real_mask = real_leaves_k == leaf_id
+        real_indices = np.where(real_mask)[0]
+
+        if len(real_indices) == 0:
+            continue
+
+        # Get leaf value (prediction contribution) from tree structure
+        leaf_value = get_leaf_value_from_tree(tree_dump["tree_structure"], leaf_id)
+
+        # Calculate utility: how well does this leaf classify real data?
+        y_true_in_leaf = y_real_test[real_indices]
+        leaf_utility = calculate_leaf_utility(y_true_in_leaf, leaf_value)
+
+        # Weight by importance: leaves handling more real data are more important
+        weight = len(real_indices) / n_real_test
+        weighted_utility = leaf_utility * weight
+
+        # Find synthetic points in this leaf
+        synth_mask = synthetic_leaves_k == leaf_id
+        synth_indices = np.where(synth_mask)[0]
+
+        if len(synth_indices) > 0:
+            # Distribute utility among synthetic points in this leaf
+            score_per_point = weighted_utility / len(synth_indices)
+            utility_scores[synth_indices] += score_per_point
+
+    # Handle empty leaves (synthetic points in leaves with NO real data)
+    synth_unique_leaves = np.unique(synthetic_leaves_k)
+    empty_leaves = np.setdiff1d(synth_unique_leaves, unique_leaves)
+
+    for leaf_id in empty_leaves:
+        synth_mask = synthetic_leaves_k == leaf_id
+        synth_indices = np.where(synth_mask)[0]
+
+        if len(synth_indices) > 0:
+            # Penalize: these synthetic points created regions with no real data
+            utility_scores[synth_indices] += empty_leaf_penalty / len(synth_indices)
+
+    return utility_scores
+
+
 def compute_utility_scores(
     model: LGBMClassifier,
     X_synthetic: np.ndarray,
     X_real_test: np.ndarray,
     y_real_test: np.ndarray,
     empty_leaf_penalty: float = -1.0,
+    n_jobs: int = 1,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
     Compute utility scores for synthetic points based on leaf co-occurrence.
@@ -89,6 +165,7 @@ def compute_utility_scores(
         X_real_test: Real test data features
         y_real_test: Real test data labels
         empty_leaf_penalty: Penalty for synthetic points in leaves with no real data
+        n_jobs: Number of parallel jobs (1=sequential, -1=all CPUs)
 
     Returns:
         - Mean utility scores per synthetic point (shape: [n_synthetic])
@@ -107,57 +184,50 @@ def compute_utility_scores(
     booster = model.booster_
     tree_dump_all = booster.dump_model()["tree_info"]
 
-    # Track utility per tree per point
-    utility_per_tree = np.zeros((n_synthetic, n_trees))
+    # Process trees either sequentially or in parallel
+    console.print("\n[bold]Computing leaf utilities...[/bold]")
+    console.print(f"  Trees: {n_trees}")
+    console.print(f"  Synthetic points: {n_synthetic:,}")
+    console.print(f"  Real test points: {n_real_test:,}")
 
-    # Process each tree
-    for tree_k in range(n_trees):
-        tree_dump = tree_dump_all[tree_k]
-        synthetic_leaves_k = synthetic_leaves[:, tree_k]
-        real_leaves_k = real_leaves[:, tree_k]
+    if n_jobs == 1:
+        # Sequential execution
+        utility_per_tree_list = []
+        for tree_k in range(n_trees):
+            if tree_k % 20 == 0:
+                console.print(f"  Processing tree {tree_k}/{n_trees}...")
 
-        # Get unique leaves that contain real data
-        unique_leaves = np.unique(real_leaves_k)
+            utility_scores = process_single_tree(
+                tree_k,
+                tree_dump_all[tree_k],
+                synthetic_leaves[:, tree_k],
+                real_leaves[:, tree_k],
+                y_real_test,
+                n_synthetic,
+                n_real_test,
+                empty_leaf_penalty,
+            )
+            utility_per_tree_list.append(utility_scores)
+    else:
+        # Parallel execution
+        console.print(f"  Using parallel execution with n_jobs={n_jobs}")
 
-        for leaf_id in unique_leaves:
-            # Find real points in this leaf
-            real_mask = real_leaves_k == leaf_id
-            real_indices = np.where(real_mask)[0]
+        utility_per_tree_list = Parallel(n_jobs=n_jobs, verbose=10)(
+            delayed(process_single_tree)(
+                tree_k,
+                tree_dump_all[tree_k],
+                synthetic_leaves[:, tree_k],
+                real_leaves[:, tree_k],
+                y_real_test,
+                n_synthetic,
+                n_real_test,
+                empty_leaf_penalty,
+            )
+            for tree_k in range(n_trees)
+        )
 
-            if len(real_indices) == 0:
-                continue
-
-            # Get leaf value from tree structure
-            leaf_value = get_leaf_value_from_tree(tree_dump["tree_structure"], leaf_id)
-
-            # Calculate utility: how well does this leaf classify real data?
-            y_true_in_leaf = y_real_test[real_indices]
-            leaf_utility = calculate_leaf_utility(y_true_in_leaf, leaf_value)
-
-            # Weight by importance: leaves handling more real data are more important
-            weight = len(real_indices) / n_real_test
-            weighted_utility = leaf_utility * weight
-
-            # Find synthetic points in this leaf
-            synth_mask = synthetic_leaves_k == leaf_id
-            synth_indices = np.where(synth_mask)[0]
-
-            if len(synth_indices) > 0:
-                # Distribute utility among synthetic points in this leaf
-                score_per_point = weighted_utility / len(synth_indices)
-                utility_per_tree[synth_indices, tree_k] += score_per_point
-
-        # Handle empty leaves (synthetic points in leaves with NO real data)
-        synth_unique_leaves = np.unique(synthetic_leaves_k)
-        empty_leaves = np.setdiff1d(synth_unique_leaves, unique_leaves)
-
-        for leaf_id in empty_leaves:
-            synth_mask = synthetic_leaves_k == leaf_id
-            synth_indices = np.where(synth_mask)[0]
-
-            if len(synth_indices) > 0:
-                # Penalize: these synthetic points created regions with no real data
-                utility_per_tree[synth_indices, tree_k] += empty_leaf_penalty / len(synth_indices)
+    # Convert list to array [n_synthetic, n_trees]
+    utility_per_tree = np.column_stack(utility_per_tree_list)
 
     # Compute mean utility across trees
     mean_utility = np.mean(utility_per_tree, axis=1)
@@ -204,6 +274,7 @@ def run_leaf_alignment(
     output_file: Optional[Path] = None,
     n_estimators: int = 500,
     empty_leaf_penalty: float = -1.0,
+    n_jobs: int = 1,
     random_state: int = 42,
 ) -> Dict:
     """
@@ -218,6 +289,7 @@ def run_leaf_alignment(
         output_file: Path to save results CSV (optional)
         n_estimators: Number of trees (more = tighter CIs)
         empty_leaf_penalty: Penalty for empty leaves
+        n_jobs: Number of parallel jobs (1=sequential, -1=all CPUs)
         random_state: Random seed
 
     Returns:
@@ -241,13 +313,13 @@ def run_leaf_alignment(
     console.print("  [green]✓ Model trained[/green]")
 
     # Compute utility scores
-    console.print("  Computing leaf utilities...")
     mean_utility, utility_per_tree = compute_utility_scores(
         model,
         X_synthetic,
         X_real_test,
         y_real_test.values,
-        empty_leaf_penalty
+        empty_leaf_penalty,
+        n_jobs
     )
 
     # Compute confidence intervals

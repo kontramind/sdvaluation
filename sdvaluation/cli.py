@@ -281,6 +281,12 @@ def dual_evaluation(
         help="Number of trees for leaf alignment (more = tighter CIs, default: 500)",
         min=100,
     ),
+    n_jobs: int = typer.Option(
+        1,
+        "--n-jobs",
+        "-j",
+        help="Number of parallel jobs (1=sequential, -1=all CPUs). Used for LGBM training and leaf alignment.",
+    ),
     random_state: int = typer.Option(
         42,
         "--seed",
@@ -358,6 +364,7 @@ def dual_evaluation(
             threshold_metric=threshold_metric,
             run_leaf_alignment=not no_leaf_alignment,
             leaf_n_estimators=leaf_n_estimators,
+            n_jobs=n_jobs,
             random_state=random_state,
         )
 

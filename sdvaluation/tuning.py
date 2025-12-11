@@ -32,6 +32,7 @@ class LGBMTuner:
         y_train: pd.Series,
         n_folds: int = 5,
         n_trials: int = 100,
+        n_jobs: int = 1,
         random_state: int = 42,
     ):
         """
@@ -42,12 +43,14 @@ class LGBMTuner:
             y_train: Training labels (binary)
             n_folds: Number of cross-validation folds
             n_trials: Number of Bayesian optimization trials
+            n_jobs: Number of parallel jobs for LGBM (1=sequential, -1=all CPUs)
             random_state: Random seed for reproducibility
         """
         self.X_train = X_train
         self.y_train = y_train
         self.n_folds = n_folds
         self.n_trials = n_trials
+        self.n_jobs = n_jobs
         self.random_state = random_state
         self.best_params = None
         self.best_score = None
@@ -75,7 +78,7 @@ class LGBMTuner:
             'min_child_samples': trial.suggest_int('min_child_samples', 1, 60),
             'n_estimators': 1000,  # Large number, will use early stopping
             'random_state': self.random_state,
-            'n_jobs': -1,
+            'n_jobs': self.n_jobs,
         }
 
         # Regularization parameters
@@ -192,7 +195,7 @@ class LGBMTuner:
             'min_child_samples': self.best_params['min_child_samples'],
             'n_estimators': 1000,
             'random_state': self.random_state,
-            'n_jobs': -1,
+            'n_jobs': self.n_jobs,
             'verbosity': -1,
             'reg_alpha': self.best_params.get('reg_alpha', 0.0),
             'reg_lambda': self.best_params.get('reg_lambda', 0.0),
@@ -313,6 +316,7 @@ def tune_hyperparameters(
     timeout: int = None,
     threshold_metric: Literal['f1', 'precision', 'recall', 'youden'] = 'f1',
     optimize_threshold: bool = True,
+    n_jobs: int = 1,
     random_state: int = 42,
 ) -> Dict[str, Any]:
     """
@@ -326,6 +330,7 @@ def tune_hyperparameters(
         timeout: Timeout in seconds (None = no limit)
         threshold_metric: Metric to optimize threshold for ('f1', 'precision', 'recall', 'youden')
         optimize_threshold: Whether to find optimal threshold via CV
+        n_jobs: Number of parallel jobs for LGBM (1=sequential, -1=all CPUs)
         random_state: Random seed
 
     Returns:
@@ -336,6 +341,7 @@ def tune_hyperparameters(
         y_train=y_train,
         n_folds=n_folds,
         n_trials=n_trials,
+        n_jobs=n_jobs,
         random_state=random_state,
     )
 
