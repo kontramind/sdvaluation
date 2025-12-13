@@ -292,10 +292,11 @@ def get_cv_predictions(
     lgbm_params = params.copy()
     lgbm_params.pop('imbalance_method', None)
     lgbm_params.pop('early_stopping_rounds', None)
+    lgbm_params['verbose'] = -1  # Suppress output
 
     # Create model
     from lightgbm import LGBMClassifier
-    model = LGBMClassifier(**lgbm_params, random_state=random_state, verbose=-1)
+    model = LGBMClassifier(**lgbm_params)
 
     # Get cross-validated predictions
     cv = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=random_state)

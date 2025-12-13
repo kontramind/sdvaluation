@@ -300,6 +300,7 @@ def run_leaf_alignment(
     params.pop('imbalance_method', None)
     params.pop('early_stopping_rounds', None)
     params['n_estimators'] = n_estimators
+    params['verbose'] = -1  # Suppress output
 
     # Handle class imbalance
     n_pos = np.sum(y_synthetic == 1)
@@ -308,7 +309,7 @@ def run_leaf_alignment(
 
     # Train model
     console.print(f"  Training LGBM with {n_estimators} trees...")
-    model = LGBMClassifier(**params, random_state=random_state, verbose=-1)
+    model = LGBMClassifier(**params)
     model.fit(X_synthetic, y_synthetic)
     console.print("  [green]✓ Model trained[/green]")
 
