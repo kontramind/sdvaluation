@@ -122,6 +122,7 @@ def train_and_evaluate(
     lgbm_params = params.copy()
     lgbm_params.pop('imbalance_method', None)
     lgbm_params.pop('early_stopping_rounds', None)
+    lgbm_params['verbose'] = -1  # Suppress output
 
     # Compute scale_pos_weight for this specific dataset
     n_pos = np.sum(y_train == 1)
@@ -130,7 +131,7 @@ def train_and_evaluate(
         lgbm_params['scale_pos_weight'] = n_neg / n_pos
 
     # Train model
-    model = LGBMClassifier(**lgbm_params, random_state=random_state, verbose=-1)
+    model = LGBMClassifier(**lgbm_params)
     model.fit(X_train, y_train)
 
     # Predict
