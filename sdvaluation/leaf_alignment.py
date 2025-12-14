@@ -333,14 +333,33 @@ def run_leaf_alignment(
     n_beneficial = np.sum(reliably_beneficial)
     n_uncertain = len(mean) - n_hallucinated - n_beneficial
 
-    console.print(f"  [green]✓ Hallucinated: {n_hallucinated:,} "
-                 f"({100*n_hallucinated/len(mean):.1f}%)[/green]")
-    console.print(f"    Beneficial: {n_beneficial:,} "
-                 f"({100*n_beneficial/len(mean):.1f}%)")
-    console.print(f"    Uncertain: {n_uncertain:,} "
-                 f"({100*n_uncertain/len(mean):.1f}%)")
+    # ========================================================================
+    # Display Summary Statistics
+    # ========================================================================
+    console.print("\n[bold yellow]═══════════════════════════════════════════════════[/bold yellow]")
+    console.print("[bold yellow]              Leaf Alignment Summary               [/bold yellow]")
+    console.print("[bold yellow]═══════════════════════════════════════════════════[/bold yellow]\n")
 
-    # Create results dataframe
+    # 1. Point estimate distribution (mean utility scores)
+    n_negative = np.sum(mean < 0)
+    n_positive = np.sum(mean > 0)
+    n_zero = np.sum(mean == 0)
+
+    console.print("[bold]Utility Score Distribution (Point Estimates):[/bold]")
+    console.print(f"  Negative utility (< 0): {n_negative:,} ({100*n_negative/len(mean):.2f}%)")
+    console.print(f"  Positive utility (> 0): {n_positive:,} ({100*n_positive/len(mean):.2f}%)")
+    console.print(f"  Zero utility (= 0):     {n_zero:,} ({100*n_zero/len(mean):.2f}%)")
+
+    # 2. Statistical confidence (CI-based classification)
+    console.print("\n[bold]Statistical Confidence (95% CI-based):[/bold]")
+    console.print(f"  Reliably hallucinated (CI upper < 0): [red]{n_hallucinated:,}[/red] "
+                 f"({100*n_hallucinated/len(mean):.2f}%)")
+    console.print(f"  Reliably beneficial (CI lower > 0):   [green]{n_beneficial:,}[/green] "
+                 f"({100*n_beneficial/len(mean):.2f}%)")
+    console.print(f"  Uncertain (CI spans 0):                {n_uncertain:,} "
+                 f"({100*n_uncertain/len(mean):.2f}%)")
+
+    # Create results dataframe (needed for tables below)
     results = pd.DataFrame({
         "synthetic_index": range(len(mean)),
         "utility_score": mean,
@@ -348,7 +367,74 @@ def run_leaf_alignment(
         "utility_ci_lower": ci_lower,
         "utility_ci_upper": ci_upper,
         "reliably_hallucinated": reliably_hallucinated,
+        "class": y_synthetic.values,
     })
+
+    # 3. Top 10 worst hallucinations table
+    if n_hallucinated > 0:
+        from rich.table import Table
+
+        console.print("\n[bold red]Top 10 Reliably Hallucinated Points:[/bold red]")
+        top_hallucinations = results[reliably_hallucinated].nsmallest(10, "utility_score")
+
+        table = Table(show_header=True)
+        table.add_column("Index", justify="right")
+        table.add_column("Utility Score", justify="right")
+        table.add_column("Std Error", justify="right")
+        table.add_column("95% CI", justify="center")
+
+        for _, row in top_hallucinations.iterrows():
+            table.add_row(
+                f"{int(row['synthetic_index'])}",
+                f"{row['utility_score']:.6f}",
+                f"{row['utility_se']:.6f}",
+                f"[{row['utility_ci_lower']:.6f}, {row['utility_ci_upper']:.6f}]",
+            )
+
+        console.print(table)
+    else:
+        console.print("\n[green]✓ No reliably hallucinated points detected![/green]")
+
+    # 4. Class-specific breakdown
+    console.print("\n[bold cyan]═══════════════════════════════════════════════════[/bold cyan]")
+    console.print("[bold cyan]           Class-Specific Statistics               [/bold cyan]")
+    console.print("[bold cyan]═══════════════════════════════════════════════════[/bold cyan]\n")
+
+    for class_value in [0, 1]:
+        class_name = "Negative (No Readmission)" if class_value == 0 else "Positive (Readmission)"
+        class_results = results[results["class"] == class_value]
+        n_class = len(class_results)
+
+        if n_class == 0:
+            continue
+
+        console.print(f"[bold]{class_name} - {n_class:,} points[/bold]")
+
+        # Point estimate distribution
+        n_negative_class = np.sum(class_results["utility_score"] < 0)
+        n_positive_class = np.sum(class_results["utility_score"] > 0)
+
+        console.print("  Utility Distribution:")
+        console.print(f"    Negative utility: {n_negative_class:,} ({100*n_negative_class/n_class:.2f}%)")
+        console.print(f"    Positive utility: {n_positive_class:,} ({100*n_positive_class/n_class:.2f}%)")
+
+        # Statistical confidence
+        n_hallucinated_class = np.sum(class_results["reliably_hallucinated"])
+        reliably_beneficial_class = class_results["utility_ci_lower"] > 0
+        n_beneficial_class = np.sum(reliably_beneficial_class)
+        n_uncertain_class = n_class - n_hallucinated_class - n_beneficial_class
+
+        console.print("  Statistical Confidence:")
+        color = "red" if n_hallucinated_class / n_class > 0.1 else "yellow"
+        console.print(f"    Reliably hallucinated: [{color}]{n_hallucinated_class:,}[/{color}] "
+                     f"({100*n_hallucinated_class/n_class:.2f}%)")
+        console.print(f"    Reliably beneficial:   [green]{n_beneficial_class:,}[/green] "
+                     f"({100*n_beneficial_class/n_class:.2f}%)")
+        console.print(f"    Uncertain:             {n_uncertain_class:,} "
+                     f"({100*n_uncertain_class/n_class:.2f}%)")
+        console.print()
+
+    console.print("[bold green]✓ Leaf Alignment Analysis Complete![/bold green]\n")
 
     # Save if output file specified
     if output_file is not None:

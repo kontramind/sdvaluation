@@ -142,6 +142,10 @@ def train_and_evaluate(
     cm = confusion_matrix(y_test, y_pred)
     tn, fp, fn, tp = cm.ravel()
 
+    # Compute rates
+    fpr = fp / (fp + tn) if (fp + tn) > 0 else 0.0
+    fnr = fn / (fn + tp) if (fn + tp) > 0 else 0.0
+
     # Compute metrics
     # Clip probabilities for log loss
     y_pred_proba_clipped = np.clip(y_pred_proba, 1e-15, 1 - 1e-15)
@@ -152,6 +156,8 @@ def train_and_evaluate(
         'precision': float(precision_score(y_test, y_pred, zero_division=0)),
         'recall': float(recall_score(y_test, y_pred, zero_division=0)),
         'f1': float(f1_score(y_test, y_pred, zero_division=0)),
+        'fpr': float(fpr),
+        'fnr': float(fnr),
         'confusion_matrix': {
             'tn': int(tn),
             'fp': int(fp),
@@ -164,6 +170,133 @@ def train_and_evaluate(
     return metrics
 
 
+def print_confusion_matrix(name: str, metrics: Dict[str, Any]) -> None:
+    """Display formatted confusion matrix and metrics."""
+    from rich.table import Table
+
+    cm = metrics['confusion_matrix']
+
+    console.print(f"\n[bold]{name}[/bold]")
+    console.print(f"  Threshold: {metrics['threshold']:.3f}")
+
+    # Confusion matrix table
+    table = Table(show_header=True, title="Confusion Matrix")
+    table.add_column("", style="bold")
+    table.add_column("Predicted: 0", justify="right")
+    table.add_column("Predicted: 1", justify="right")
+
+    table.add_row(
+        "Actual: 0",
+        f"[green]{cm['tn']:,}[/green] (TN)",
+        f"[red]{cm['fp']:,}[/red] (FP)",
+    )
+    table.add_row(
+        "Actual: 1",
+        f"[red]{cm['fn']:,}[/red] (FN)",
+        f"[green]{cm['tp']:,}[/green] (TP)",
+    )
+
+    console.print(table)
+
+    # Metrics
+    console.print(f"\n  [bold]Performance Metrics:[/bold]")
+    console.print(f"    AUROC:     {metrics['auroc']:.4f}")
+    console.print(f"    Precision: {metrics['precision']:.4f}")
+    console.print(f"    Recall:    {metrics['recall']:.4f}")
+    console.print(f"    F1 Score:  {metrics['f1']:.4f}")
+    console.print(f"    FPR:       {metrics['fpr']:.4f} (False Positive Rate)")
+    console.print(f"    FNR:       {metrics['fnr']:.4f} (False Negative Rate)")
+
+
+def compare_confusion_matrices(
+    name1: str,
+    metrics1: Dict[str, Any],
+    name2: str,
+    metrics2: Dict[str, Any],
+) -> None:
+    """Display side-by-side comparison of confusion matrices."""
+    from rich.table import Table
+
+    console.print(f"\n[bold yellow]{'═' * 70}[/bold yellow]")
+    console.print(f"[bold yellow]Comparison: {name1} vs {name2:^70}[/bold yellow]")
+    console.print(f"[bold yellow]{'═' * 70}[/bold yellow]")
+
+    cm1 = metrics1['confusion_matrix']
+    cm2 = metrics2['confusion_matrix']
+
+    # Compute differences
+    diff_tn = cm2['tn'] - cm1['tn']
+    diff_fp = cm2['fp'] - cm1['fp']
+    diff_fn = cm2['fn'] - cm1['fn']
+    diff_tp = cm2['tp'] - cm1['tp']
+
+    diff_fpr = metrics2['fpr'] - metrics1['fpr']
+    diff_fnr = metrics2['fnr'] - metrics1['fnr']
+    diff_precision = metrics2['precision'] - metrics1['precision']
+    diff_recall = metrics2['recall'] - metrics1['recall']
+    diff_f1 = metrics2['f1'] - metrics1['f1']
+    diff_auroc = metrics2['auroc'] - metrics1['auroc']
+
+    # Confusion matrix differences table
+    table = Table(title="Confusion Matrix Comparison", show_header=True)
+    table.add_column("", style="bold")
+    table.add_column(name1, justify="right")
+    table.add_column(name2, justify="right")
+    table.add_column("Difference", justify="right")
+
+    def format_diff(val):
+        if val > 0:
+            return f"[red]+{val:,}[/red]"
+        elif val < 0:
+            return f"[green]{val:,}[/green]"
+        else:
+            return f"{val:,}"
+
+    table.add_row("TN", f"{cm1['tn']:,}", f"{cm2['tn']:,}", format_diff(diff_tn))
+    table.add_row("FP", f"{cm1['fp']:,}", f"{cm2['fp']:,}", format_diff(diff_fp))
+    table.add_row("FN", f"{cm1['fn']:,}", f"{cm2['fn']:,}", format_diff(diff_fn))
+    table.add_row("TP", f"{cm1['tp']:,}", f"{cm2['tp']:,}", format_diff(diff_tp))
+
+    console.print(table)
+
+    # Metrics comparison
+    console.print(f"\n[bold]Metric Changes ({name2} vs {name1}):[/bold]")
+
+    def format_metric_diff(val, lower_is_better=False):
+        if abs(val) < 0.001:
+            return f"{val:+.4f} (no change)"
+        elif lower_is_better:
+            # For FPR/FNR, negative change is good
+            if val < 0:
+                return f"[green]{val:+.4f} (improved)[/green]"
+            else:
+                return f"[red]{val:+.4f} (degraded)[/red]"
+        else:
+            # For other metrics, positive change is good
+            if val > 0:
+                return f"[green]{val:+.4f} (improved)[/green]"
+            else:
+                return f"[red]{val:+.4f} (degraded)[/red]"
+
+    console.print(f"  AUROC:     {format_metric_diff(diff_auroc)}")
+    console.print(f"  Precision: {format_metric_diff(diff_precision)}")
+    console.print(f"  Recall:    {format_metric_diff(diff_recall)}")
+    console.print(f"  F1 Score:  {format_metric_diff(diff_f1)}")
+    console.print(f"  FPR:       {format_metric_diff(diff_fpr, lower_is_better=True)}")
+    console.print(f"  FNR:       {format_metric_diff(diff_fnr, lower_is_better=True)}")
+
+    # Interpretation
+    console.print(f"\n[bold]Key Observations:[/bold]")
+    if abs(diff_fp) > 10:
+        direction = "increased" if diff_fp > 0 else "decreased"
+        color = "red" if diff_fp > 0 else "green"
+        console.print(f"  • False Positives [{color}]{direction}[/{color}] by {abs(diff_fp):,}")
+    if abs(diff_fn) > 10:
+        direction = "increased" if diff_fn > 0 else "decreased"
+        color = "red" if diff_fn > 0 else "green"
+        console.print(f"  • False Negatives [{color}]{direction}[/{color}] by {abs(diff_fn):,}")
+
+
 def display_scenario_comparison(
     scenario_name: str,
     real_metrics: Dict[str, Any],
@@ -174,79 +307,12 @@ def display_scenario_comparison(
     console.print(f"[bold cyan]{scenario_name:^70}[/bold cyan]")
     console.print(f"[bold cyan]{'═' * 70}[/bold cyan]\n")
 
-    # Metrics table
-    table = Table(show_header=True, header_style="bold")
-    table.add_column("Metric", style="cyan")
-    table.add_column("Real Train", justify="right")
-    table.add_column("Synth Train", justify="right")
-    table.add_column("Gap", justify="right")
+    # Show individual confusion matrices
+    print_confusion_matrix("Real Training Data", real_metrics)
+    print_confusion_matrix("Synthetic Training Data", synth_metrics)
 
-    metrics_to_show = ['auroc', 'precision', 'recall', 'f1', 'logloss']
-
-    for metric in metrics_to_show:
-        real_val = real_metrics[metric]
-        synth_val = synth_metrics[metric]
-
-        # For logloss, lower is better
-        if metric == 'logloss':
-            gap = real_val - synth_val  # Negative gap means synth is worse
-            gap_str = f"{gap:+.4f}"
-            if gap < 0:
-                gap_str = f"[red]{gap_str}[/red] (worse)"
-            else:
-                gap_str = f"[green]{gap_str}[/green] (better)"
-        else:
-            gap = synth_val - real_val
-            gap_str = f"{gap:+.4f}"
-            if gap < 0:
-                gap_str = f"[red]{gap_str}[/red] (worse)"
-            else:
-                gap_str = f"[green]{gap_str}[/green] (better)"
-
-        # Format metric name
-        metric_display = metric.upper() if metric == 'auroc' else metric.replace('_', ' ').title()
-
-        table.add_row(
-            metric_display,
-            f"{real_val:.4f}",
-            f"{synth_val:.4f}",
-            gap_str
-        )
-
-    console.print(table)
-
-    # Confusion matrices side by side
-    console.print("\n[bold]Confusion Matrices:[/bold]\n")
-
-    cm_table = Table(show_header=True, header_style="bold")
-    cm_table.add_column("", style="cyan", width=20)
-    cm_table.add_column("Real: Pred=0", justify="right", width=12)
-    cm_table.add_column("Real: Pred=1", justify="right", width=12)
-    cm_table.add_column("", width=2)
-    cm_table.add_column("Synth: Pred=0", justify="right", width=12)
-    cm_table.add_column("Synth: Pred=1", justify="right", width=12)
-
-    real_cm = real_metrics['confusion_matrix']
-    synth_cm = synth_metrics['confusion_matrix']
-
-    cm_table.add_row(
-        "Actual: 0",
-        f"{real_cm['tn']:,}",
-        f"[red]{real_cm['fp']:,}[/red]",
-        "",
-        f"{synth_cm['tn']:,}",
-        f"[red]{synth_cm['fp']:,}[/red]",
-    )
-    cm_table.add_row(
-        "Actual: 1",
-        f"[red]{real_cm['fn']:,}[/red]",
-        f"[green]{real_cm['tp']:,}[/green]",
-        "",
-        f"[red]{synth_cm['fn']:,}[/red]",
-        f"[green]{synth_cm['tp']:,}[/green]",
-    )
-
-    console.print(cm_table)
+    # Show detailed comparison
+    compare_confusion_matrices("Real", real_metrics, "Synth", synth_metrics)
 
 
 def display_transfer_gap(
