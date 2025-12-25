@@ -13,6 +13,7 @@ import typer
 from rich.console import Console
 
 from .core import run_data_valuation
+from .tuner import tune_dual_scenario
 
 app = typer.Typer(help="Data Shapley valuation for synthetic data")
 console = Console()
@@ -189,6 +190,152 @@ def data_valuation_mimic_iii(
 
     except Exception as e:
         console.print(f"\n[bold red]Error during data valuation:[/bold red] {e}\n")
+        raise typer.Exit(code=1)
+
+
+@app.command(name="tune")
+def tune_hyperparameters(
+    dseed_dir: Path = typer.Option(
+        ...,
+        "-d",
+        "--dseed-dir",
+        help="Path to dseed directory containing training/unsampled data",
+        exists=True,
+        file_okay=False,
+        dir_okay=True,
+        readable=True,
+    ),
+    target_column: str = typer.Option(
+        "IS_READMISSION_30D",
+        "-c",
+        "--target-column",
+        help="Name of the target column",
+    ),
+    n_trials: int = typer.Option(
+        100,
+        "-n",
+        "--n-trials",
+        help="Number of Bayesian optimization trials",
+        min=10,
+    ),
+    n_folds: int = typer.Option(
+        5,
+        "-k",
+        "--n-folds",
+        help="Number of cross-validation folds",
+        min=2,
+    ),
+    threshold_metric: str = typer.Option(
+        "f1",
+        "--threshold-metric",
+        help="Metric to optimize classification threshold: f1, precision, recall, youden",
+    ),
+    n_jobs: int = typer.Option(
+        -1,
+        "-j",
+        "--n-jobs",
+        help="Number of parallel jobs (1=sequential, -1=all CPUs)",
+    ),
+    seed: int = typer.Option(
+        42,
+        "-s",
+        "--seed",
+        help="Random seed for reproducibility",
+    ),
+    output_name: str = typer.Option(
+        "hyperparams.json",
+        "-o",
+        "--output-name",
+        help="Output filename for hyperparameters",
+    ),
+) -> None:
+    """
+    Tune LightGBM hyperparameters for both deployment and optimal scenarios.
+
+    This command performs dual-scenario hyperparameter tuning:
+
+    Scenario 1 (Deployment): Tune on unsampled (population) data
+    - Represents realistic deployment with distribution shift
+    - Parameters optimized for 40k population distribution
+
+    Scenario 2 (Optimal): Tune on training (real) data
+    - Represents best-case performance ceiling
+    - Parameters optimized for 10k sample distribution
+
+    The command auto-discovers files in the dseed directory:
+    - *_unsampled.csv: 40k population data for deployment tuning
+    - *_training.csv: 10k real data for optimal tuning
+    - *_encoding.yaml: RDT encoding configuration
+
+    Optimization strategy:
+    - Hyperparameters: Optimized using ROC-AUC (threshold-independent)
+    - Threshold: Optimized for specified metric (F1/recall/precision)
+
+    Output (saved to dseed_dir/hyperparams.json):
+    - deployment.lgbm_params: LightGBM hyperparameters tuned on unsampled
+    - deployment.optimal_threshold: Classification threshold
+    - optimal.lgbm_params: LightGBM hyperparameters tuned on training
+    - optimal.optimal_threshold: Classification threshold
+    - comparison: Parameter differences and performance gaps
+
+    Examples:
+
+        Basic usage (auto-discover files):
+
+            $ sdvaluation tune --dseed-dir dseed6765/
+
+        Custom settings with more trials:
+
+            $ sdvaluation tune \\
+                --dseed-dir dseed6765/ \\
+                --n-trials 200 \\
+                --threshold-metric recall \\
+                --n-jobs 8
+
+        Batch process all dseeds:
+
+            $ for dseed in dseed*/; do \\
+                sdvaluation tune --dseed-dir $dseed; \\
+              done
+    """
+    console.print("\n[bold cyan]LightGBM Hyperparameter Tuning[/bold cyan]")
+    console.print("[cyan]Dual Scenario: Deployment + Optimal[/cyan]\n")
+
+    try:
+        # Validate threshold metric
+        valid_metrics = ["f1", "recall", "precision", "youden"]
+        if threshold_metric not in valid_metrics:
+            console.print(
+                f"[bold red]Error:[/bold red] Invalid threshold metric '{threshold_metric}'. "
+                f"Must be one of: {', '.join(valid_metrics)}"
+            )
+            raise typer.Exit(code=1)
+
+        # Run tuning
+        results = tune_dual_scenario(
+            dseed_dir=dseed_dir,
+            target_column=target_column,
+            n_trials=n_trials,
+            n_folds=n_folds,
+            threshold_metric=threshold_metric,
+            n_jobs=n_jobs,
+            seed=seed,
+            output_name=output_name,
+        )
+
+        # Display summary
+        console.print("\n[bold]Summary:[/bold]")
+        console.print(f"  Deployment CV ROC-AUC: {results['deployment']['best_cv_score']:.4f}")
+        console.print(f"  Optimal CV ROC-AUC:    {results['optimal']['best_cv_score']:.4f}")
+        console.print(f"  CV Score Gap:          {results['comparison']['cv_score_gap']:+.4f}")
+        console.print(f"  Threshold Gap:         {results['comparison']['threshold_gap']:+.3f}")
+
+        console.print(f"\n[bold green]✓ Hyperparameter tuning completed successfully![/bold green]\n")
+
+    except Exception as e:
+        console.print(f"\n[bold red]Error during hyperparameter tuning:[/bold red] {e}\n")
+        import traceback
+        traceback.print_exc()
         raise typer.Exit(code=1)
 
 
