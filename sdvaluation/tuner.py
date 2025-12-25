@@ -27,12 +27,15 @@ import pandas as pd
 from lightgbm import LGBMClassifier
 from rich.console import Console
 from sklearn.metrics import (
+    confusion_matrix,
     f1_score,
+    log_loss,
     precision_score,
     recall_score,
     roc_auc_score,
 )
 from sklearn.model_selection import StratifiedKFold
+from rich.table import Table
 
 try:
     import optuna
@@ -577,6 +580,122 @@ def optimize_threshold(
     }
 
 
+def evaluate_on_test(
+    params: Dict[str, Any],
+    X_train: pd.DataFrame,
+    y_train: pd.Series,
+    X_test: pd.DataFrame,
+    y_test: pd.Series,
+    threshold: float,
+    seed: int = 42,
+) -> Dict[str, Any]:
+    """
+    Train model with given params and evaluate on test data.
+
+    Args:
+        params: LightGBM hyperparameters
+        X_train: Training features
+        y_train: Training labels
+        X_test: Test features
+        y_test: Test labels
+        threshold: Classification threshold
+        seed: Random seed
+
+    Returns:
+        Dictionary with test metrics and confusion matrix
+    """
+    # Train model on full training data
+    model = LGBMClassifier(**params)
+    model.fit(X_train, y_train)
+
+    # Predict on test data
+    y_pred_proba = model.predict_proba(X_test)[:, 1]
+    y_pred = (y_pred_proba >= threshold).astype(int)
+
+    # Compute confusion matrix
+    cm = confusion_matrix(y_test, y_pred)
+    tn, fp, fn, tp = cm.ravel()
+
+    # Compute rates
+    fpr = fp / (fp + tn) if (fp + tn) > 0 else 0.0
+    fnr = fn / (fn + tp) if (fn + tp) > 0 else 0.0
+
+    # Compute metrics
+    y_pred_proba_clipped = np.clip(y_pred_proba, 1e-15, 1 - 1e-15)
+
+    metrics = {
+        "auroc": float(roc_auc_score(y_test, y_pred_proba)),
+        "logloss": float(log_loss(y_test, y_pred_proba_clipped)),
+        "f1": float(f1_score(y_test, y_pred, zero_division=0)),
+        "precision": float(precision_score(y_test, y_pred, zero_division=0)),
+        "recall": float(recall_score(y_test, y_pred, zero_division=0)),
+        "fpr": float(fpr),
+        "fnr": float(fnr),
+        "confusion_matrix": {
+            "tn": int(tn),
+            "fp": int(fp),
+            "fn": int(fn),
+            "tp": int(tp),
+        },
+        "threshold": float(threshold),
+    }
+
+    return metrics
+
+
+def display_test_evaluation(
+    scenario_name: str,
+    cv_score: float,
+    test_metrics: Dict[str, Any],
+) -> None:
+    """
+    Display test evaluation results with confusion matrix.
+
+    Args:
+        scenario_name: Name of scenario (e.g., "Deployment", "Optimal")
+        cv_score: Cross-validation ROC-AUC score
+        test_metrics: Test evaluation metrics
+    """
+    cm = test_metrics["confusion_matrix"]
+
+    console.print(f"\n[bold cyan]{scenario_name} - Test Evaluation[/bold cyan]")
+    console.print(f"  Threshold: {test_metrics['threshold']:.3f}")
+
+    # Confusion matrix table
+    table = Table(show_header=True, title="Confusion Matrix")
+    table.add_column("", style="bold")
+    table.add_column("Predicted: 0", justify="right")
+    table.add_column("Predicted: 1", justify="right")
+
+    table.add_row(
+        "Actual: 0",
+        f"[green]{cm['tn']:,}[/green] (TN)",
+        f"[red]{cm['fp']:,}[/red] (FP)",
+    )
+    table.add_row(
+        "Actual: 1",
+        f"[red]{cm['fn']:,}[/red] (FN)",
+        f"[green]{cm['tp']:,}[/green] (TP)",
+    )
+
+    console.print(table)
+
+    # Metrics with CV comparison
+    console.print(f"\n  [bold]Performance Metrics:[/bold]")
+    auroc_gap = test_metrics["auroc"] - cv_score
+    gap_color = "green" if auroc_gap >= 0 else "red"
+    console.print(
+        f"    AUROC:     {test_metrics['auroc']:.4f} "
+        f"(CV: {cv_score:.4f}, gap: [{gap_color}]{auroc_gap:+.4f}[/{gap_color}])"
+    )
+    console.print(f"    Log Loss:  {test_metrics['logloss']:.4f}")
+    console.print(f"    F1 Score:  {test_metrics['f1']:.4f}")
+    console.print(f"    Precision: {test_metrics['precision']:.4f}")
+    console.print(f"    Recall:    {test_metrics['recall']:.4f}")
+    console.print(f"    FPR:       {test_metrics['fpr']:.4f} (False Positive Rate)")
+    console.print(f"    FNR:       {test_metrics['fnr']:.4f} (False Negative Rate)")
+
+
 def tune_hyperparameters(
     X_train: pd.DataFrame,
     y_train: pd.Series,
@@ -785,6 +904,57 @@ def tune_dual_scenario(
         seed=seed,
     )
 
+    # Evaluate on test data if available
+    deployment_test_metrics = None
+    optimal_test_metrics = None
+
+    if discovery.files["test"] is not None:
+        console.print(f"\n[bold magenta]Evaluating on Test Data[/bold magenta]")
+
+        # Load test data
+        console.print("[cyan]Loading test data...[/cyan]")
+        X_test, y_test = load_and_encode_data(
+            discovery.get_file("test"),
+            discovery.get_file("encoding"),
+            target_column,
+        )
+        console.print(f"  Samples: {len(X_test):,}")
+
+        # Evaluate deployment model on test data
+        deployment_test_metrics = evaluate_on_test(
+            params=deployment_results["best_params"],
+            X_train=X_deployment,
+            y_train=y_deployment,
+            X_test=X_test,
+            y_test=y_test,
+            threshold=deployment_threshold["optimal_threshold"],
+            seed=seed,
+        )
+
+        # Evaluate optimal model on test data
+        optimal_test_metrics = evaluate_on_test(
+            params=optimal_results["best_params"],
+            X_train=X_optimal,
+            y_train=y_optimal,
+            X_test=X_test,
+            y_test=y_test,
+            threshold=optimal_threshold["optimal_threshold"],
+            seed=seed,
+        )
+
+        # Display results
+        display_test_evaluation(
+            "Deployment (Unsampled Params)",
+            deployment_results["best_cv_score"],
+            deployment_test_metrics,
+        )
+
+        display_test_evaluation(
+            "Optimal (Training Params)",
+            optimal_results["best_cv_score"],
+            optimal_test_metrics,
+        )
+
     # Compute parameter differences
     param_diff = {}
     for key in deployment_results["best_params"]:
@@ -819,6 +989,7 @@ def tune_dual_scenario(
             "best_cv_score": deployment_results["best_cv_score"],
             "lgbm_params": deployment_results["best_params"],
             **deployment_threshold,
+            **({"test_evaluation": deployment_test_metrics} if deployment_test_metrics else {}),
         },
         "optimal": {
             "description": "Hyperparameters tuned on training (real) data",
@@ -827,6 +998,7 @@ def tune_dual_scenario(
             "best_cv_score": optimal_results["best_cv_score"],
             "lgbm_params": optimal_results["best_params"],
             **optimal_threshold,
+            **({"test_evaluation": optimal_test_metrics} if optimal_test_metrics else {}),
         },
         "comparison": {
             "param_differences": param_diff,
