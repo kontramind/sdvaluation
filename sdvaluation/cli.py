@@ -42,7 +42,7 @@ def data_valuation_mimic_iii(
         readable=True,
     ),
     target_column: str = typer.Option(
-        "IS_READMISSION_30D",
+        "READMIT",
         "-c",
         "--target-column",
         help="Name of the target column",
@@ -118,7 +118,7 @@ def data_valuation_mimic_iii(
             $ sdvaluation shapley \\
                 -t data/synthetic_train.csv \\
                 -e data/real_test.csv \\
-                -c IS_READMISSION_30D
+                -c READMIT
 
         Fast valuation with early truncation:
 
@@ -206,7 +206,7 @@ def tune_hyperparameters(
         readable=True,
     ),
     target_column: str = typer.Option(
-        "IS_READMISSION_30D",
+        "READMIT",
         "-c",
         "--target-column",
         help="Name of the target column",
