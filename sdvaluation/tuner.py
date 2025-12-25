@@ -790,6 +790,9 @@ def tune_dual_scenario(
     for key in deployment_results["best_params"]:
         if key in ["random_state", "verbose"]:
             continue
+        # Skip if parameter not in both sets (e.g., is_unbalance vs scale_pos_weight)
+        if key not in optimal_results["best_params"]:
+            continue
         deploy_val = deployment_results["best_params"][key]
         optimal_val = optimal_results["best_params"][key]
         if isinstance(deploy_val, (int, float)) and isinstance(optimal_val, (int, float)):
