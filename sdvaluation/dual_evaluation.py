@@ -27,7 +27,7 @@ from sklearn.metrics import (
 )
 
 from .encoding import RDTDatasetEncoder, load_encoding_config
-from .tuning import tune_hyperparameters
+from .tuner import tune_hyperparameters
 
 console = Console()
 
