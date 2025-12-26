@@ -1126,8 +1126,10 @@ def run_leaf_alignment_baseline(
     console.print(f"\n[bold]Deployment Baseline Results:[/bold]")
     console.print(f"  Median Utility:    {deployment_results['median_utility']:.4f}")
     console.print(f"  Mean Utility:      {deployment_results['mean_utility']:.4f}")
-    console.print(f"  Harmful Points:    {deployment_results['harmful_count']:,}/{len(X_test):,} "
-                 f"({deployment_results['harmful_pct']*100:.1f}%)")
+    console.print(f"  Hallucinated Points: {deployment_results['n_hallucinated']:,}/{deployment_results['n_total']:,} "
+                 f"({deployment_results['pct_hallucinated']:.1f}%)")
+    console.print(f"  Beneficial Points:   {deployment_results['n_beneficial']:,}/{deployment_results['n_total']:,} "
+                 f"({deployment_results['pct_beneficial']:.1f}%)")
     console.print(f"  Results saved to:  {deployment_output.name}")
 
     # Run optimal baseline
@@ -1150,25 +1152,27 @@ def run_leaf_alignment_baseline(
     console.print(f"\n[bold]Optimal Baseline Results:[/bold]")
     console.print(f"  Median Utility:    {optimal_results['median_utility']:.4f}")
     console.print(f"  Mean Utility:      {optimal_results['mean_utility']:.4f}")
-    console.print(f"  Harmful Points:    {optimal_results['harmful_count']:,}/{len(X_test):,} "
-                 f"({optimal_results['harmful_pct']*100:.1f}%)")
+    console.print(f"  Hallucinated Points: {optimal_results['n_hallucinated']:,}/{optimal_results['n_total']:,} "
+                 f"({optimal_results['pct_hallucinated']:.1f}%)")
+    console.print(f"  Beneficial Points:   {optimal_results['n_beneficial']:,}/{optimal_results['n_total']:,} "
+                 f"({optimal_results['pct_beneficial']:.1f}%)")
     console.print(f"  Results saved to:  {optimal_output.name}")
 
     # Compare scenarios
     console.print(f"\n[bold magenta]Comparison:[/bold magenta]")
     utility_gap = optimal_results["median_utility"] - deployment_results["median_utility"]
-    harmful_reduction = deployment_results["harmful_count"] - optimal_results["harmful_count"]
+    hallucinated_reduction = deployment_results["n_hallucinated"] - optimal_results["n_hallucinated"]
 
     gap_color = "green" if utility_gap > 0 else "red"
     console.print(f"  Utility Gap (Optimal - Deployment): [{gap_color}]{utility_gap:+.4f}[/{gap_color}]")
 
-    if harmful_reduction > 0:
-        reduction_pct = (harmful_reduction / deployment_results["harmful_count"] * 100) if deployment_results["harmful_count"] > 0 else 0
-        console.print(f"  Harmful Reduction: [green]{harmful_reduction:,} fewer points ({reduction_pct:.1f}% improvement)[/green]")
-    elif harmful_reduction < 0:
-        console.print(f"  Harmful Increase: [red]{abs(harmful_reduction):,} more points[/red]")
+    if hallucinated_reduction > 0:
+        reduction_pct = (hallucinated_reduction / deployment_results["n_hallucinated"] * 100) if deployment_results["n_hallucinated"] > 0 else 0
+        console.print(f"  Hallucinated Reduction: [green]{hallucinated_reduction:,} fewer points ({reduction_pct:.1f}% improvement)[/green]")
+    elif hallucinated_reduction < 0:
+        console.print(f"  Hallucinated Increase: [red]{abs(hallucinated_reduction):,} more points[/red]")
     else:
-        console.print(f"  Harmful Count: Same in both scenarios")
+        console.print(f"  Hallucinated Count: Same in both scenarios")
 
     # Save summary
     summary = {
@@ -1195,8 +1199,8 @@ def run_leaf_alignment_baseline(
         },
         "comparison": {
             "utility_gap": float(utility_gap),
-            "harmful_reduction": int(harmful_reduction),
-            "harmful_reduction_pct": float(reduction_pct) if harmful_reduction > 0 else 0.0,
+            "hallucinated_reduction": int(hallucinated_reduction),
+            "hallucinated_reduction_pct": float(reduction_pct) if hallucinated_reduction > 0 else 0.0,
         },
     }
 
