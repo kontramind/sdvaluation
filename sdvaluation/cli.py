@@ -13,7 +13,7 @@ import typer
 from rich.console import Console
 
 from .core import run_data_valuation
-from .tuner import tune_dual_scenario
+from .tuner import tune_dual_scenario, run_leaf_alignment_baseline
 
 app = typer.Typer(help="Data Shapley valuation for synthetic data")
 console = Console()
@@ -520,6 +520,108 @@ def dual_evaluation(
 
     except Exception as e:
         console.print(f"\n[bold red]Error during dual evaluation:[/bold red] {e}\n")
+        raise typer.Exit(code=1)
+
+
+@app.command(name="leaf-alignment")
+def leaf_alignment_baseline(
+    dseed_dir: Path = typer.Option(
+        ...,
+        "-d",
+        "--dseed-dir",
+        help="Path to dseed directory with hyperparams.json",
+        exists=True,
+        file_okay=False,
+        dir_okay=True,
+        readable=True,
+    ),
+    target_column: str = typer.Option(
+        "READMIT",
+        "-c",
+        "--target-column",
+        help="Name of the target column",
+    ),
+    n_estimators: int = typer.Option(
+        500,
+        "--n-estimators",
+        help="Number of trees for leaf alignment (more = tighter CIs)",
+        min=100,
+    ),
+    n_jobs: int = typer.Option(
+        1,
+        "-j",
+        "--n-jobs",
+        help="Number of parallel jobs (1=sequential, -1=all CPUs)",
+    ),
+    random_state: int = typer.Option(
+        42,
+        "-s",
+        "--seed",
+        help="Random seed for reproducibility",
+    ),
+) -> None:
+    """
+    Establish leaf alignment baseline using real training data.
+
+    This command evaluates how well real training data represents real test
+    data using leaf co-occurrence analysis. It provides a baseline for later
+    comparing synthetic data quality.
+
+    The command runs two scenarios:
+
+    Scenario 1 (Deployment Baseline): Unsampled → Test
+    - Trains on 40k unsampled (population) data with deployment hyperparams
+    - Evaluates on 10k real test data
+    - Shows: Population data quality baseline
+
+    Scenario 2 (Optimal Baseline): Training → Test
+    - Trains on 10k real training data with optimal hyperparams
+    - Evaluates on 10k real test data
+    - Shows: Sampled training data quality baseline
+
+    Requirements:
+    - hyperparams.json must exist in dseed directory (run 'tune' first)
+    - Test data must be available
+
+    Output files (saved to dseed directory):
+    - leaf_alignment_deployment_baseline.csv: Per-point utilities
+    - leaf_alignment_optimal_baseline.csv: Per-point utilities
+    - leaf_alignment_summary.json: Summary statistics
+
+    Example usage:
+
+        # After running tune command
+        $ sdvaluation tune --dseed-dir dseed6765/
+
+        # Establish baseline
+        $ sdvaluation leaf-alignment --dseed-dir dseed6765/
+
+        # With more trees for tighter confidence intervals
+        $ sdvaluation leaf-alignment \\
+            --dseed-dir dseed6765/ \\
+            --n-estimators 1000 \\
+            --n-jobs -1
+    """
+    try:
+        console.print("\n[bold]Leaf Alignment Baseline Analysis[/bold]")
+        console.print("=" * 60)
+
+        # Run baseline analysis
+        run_leaf_alignment_baseline(
+            dseed_dir=dseed_dir,
+            target_column=target_column,
+            n_estimators=n_estimators,
+            n_jobs=n_jobs,
+            random_state=random_state,
+        )
+
+        console.print("\n" + "=" * 60)
+        console.print("[bold green]✓ Baseline analysis completed successfully![/bold green]\n")
+
+    except Exception as e:
+        console.print(f"\n[bold red]Error during baseline analysis:[/bold red] {e}\n")
+        import traceback
+        traceback.print_exc()
         raise typer.Exit(code=1)
 
 
