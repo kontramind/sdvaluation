@@ -1030,12 +1030,14 @@ def run_leaf_alignment_baseline(
     n_estimators: int = 500,
     n_jobs: int = 1,
     random_state: int = 42,
+    cross_test: bool = False,
 ) -> Dict[str, Any]:
     """
     Run leaf alignment baseline analysis on real training data.
 
     Evaluates how well real training data represents real test data using
     leaf co-occurrence analysis. Runs both deployment and optimal scenarios.
+    Optionally runs cross-test scenarios for decomposition analysis.
 
     Args:
         dseed_dir: Path to dseed directory
@@ -1043,6 +1045,7 @@ def run_leaf_alignment_baseline(
         n_estimators: Number of trees for leaf alignment
         n_jobs: Number of parallel jobs
         random_state: Random seed
+        cross_test: If True, also run cross-test scenarios (unsampled+optimal, training+deployment)
 
     Returns:
         Dictionary with baseline results
@@ -1184,6 +1187,89 @@ def run_leaf_alignment_baseline(
         seed=random_state,
     )
 
+    # Run cross-test scenarios if requested
+    cross_a_results = None
+    cross_a_test_metrics = None
+    cross_b_results = None
+    cross_b_test_metrics = None
+
+    if cross_test:
+        # Scenario 3: Unsampled data + Optimal hyperparams
+        console.print(f"\n[bold blue]Scenario 3: Cross-test A (Unsampled → Test with Optimal Params)[/bold blue]")
+        console.print(f"  Training {n_estimators} trees on {len(X_deployment):,} unsampled points...")
+        console.print(f"  [cyan]Using optimal hyperparameters (tuned on training data)[/cyan]")
+
+        cross_a_output = dseed_dir / "leaf_alignment_cross_a.csv"
+        cross_a_results = run_leaf_alignment(
+            X_synthetic=X_deployment,
+            y_synthetic=y_deployment,
+            X_real_test=X_test,
+            y_real_test=y_test,
+            lgbm_params=optimal_params,  # Using optimal params
+            output_file=cross_a_output,
+            n_estimators=n_estimators,
+            n_jobs=n_jobs,
+            random_state=random_state,
+        )
+
+        console.print(f"\n[bold]Cross-test A Results:[/bold]")
+        console.print(f"  Median Utility:    {cross_a_results['median_utility']:.4f}")
+        console.print(f"  Mean Utility:      {cross_a_results['mean_utility']:.4f}")
+        console.print(f"  Hallucinated Points: {cross_a_results['n_hallucinated']:,}/{cross_a_results['n_total']:,} "
+                     f"({cross_a_results['pct_hallucinated']:.1f}%)")
+        console.print(f"  Beneficial Points:   {cross_a_results['n_beneficial']:,}/{cross_a_results['n_total']:,} "
+                     f"({cross_a_results['pct_beneficial']:.1f}%)")
+        console.print(f"  Results saved to:  {cross_a_output.name}")
+
+        console.print(f"\n[cyan]Evaluating cross-test A model on test data...[/cyan]")
+        cross_a_test_metrics = evaluate_on_test(
+            params=optimal_params,
+            X_train=X_deployment,
+            y_train=y_deployment,
+            X_test=X_test,
+            y_test=y_test,
+            threshold=optimal_threshold,
+            seed=random_state,
+        )
+
+        # Scenario 4: Training data + Deployment hyperparams
+        console.print(f"\n[bold purple]Scenario 4: Cross-test B (Training → Test with Deployment Params)[/bold purple]")
+        console.print(f"  Training {n_estimators} trees on {len(X_optimal):,} training points...")
+        console.print(f"  [cyan]Using deployment hyperparameters (tuned on unsampled data)[/cyan]")
+
+        cross_b_output = dseed_dir / "leaf_alignment_cross_b.csv"
+        cross_b_results = run_leaf_alignment(
+            X_synthetic=X_optimal,
+            y_synthetic=y_optimal,
+            X_real_test=X_test,
+            y_real_test=y_test,
+            lgbm_params=deployment_params,  # Using deployment params
+            output_file=cross_b_output,
+            n_estimators=n_estimators,
+            n_jobs=n_jobs,
+            random_state=random_state,
+        )
+
+        console.print(f"\n[bold]Cross-test B Results:[/bold]")
+        console.print(f"  Median Utility:    {cross_b_results['median_utility']:.4f}")
+        console.print(f"  Mean Utility:      {cross_b_results['mean_utility']:.4f}")
+        console.print(f"  Hallucinated Points: {cross_b_results['n_hallucinated']:,}/{cross_b_results['n_total']:,} "
+                     f"({cross_b_results['pct_hallucinated']:.1f}%)")
+        console.print(f"  Beneficial Points:   {cross_b_results['n_beneficial']:,}/{cross_b_results['n_total']:,} "
+                     f"({cross_b_results['pct_beneficial']:.1f}%)")
+        console.print(f"  Results saved to:  {cross_b_output.name}")
+
+        console.print(f"\n[cyan]Evaluating cross-test B model on test data...[/cyan]")
+        cross_b_test_metrics = evaluate_on_test(
+            params=deployment_params,
+            X_train=X_optimal,
+            y_train=y_optimal,
+            X_test=X_test,
+            y_test=y_test,
+            threshold=deployment_threshold,
+            seed=random_state,
+        )
+
     # Display test evaluation results
     console.print(f"\n{'='*80}")
     console.print(f"[bold magenta]Test Data Evaluation Results[/bold magenta]")
@@ -1202,6 +1288,20 @@ def run_leaf_alignment_baseline(
         optimal_results["median_utility"],  # Use median utility as proxy for CV score
         optimal_test_metrics,
     )
+
+    # Display cross-test evaluations if available
+    if cross_test:
+        display_test_evaluation(
+            "Cross-test A (Unsampled → Test with Optimal Params)",
+            cross_a_results["median_utility"],
+            cross_a_test_metrics,
+        )
+
+        display_test_evaluation(
+            "Cross-test B (Training → Test with Deployment Params)",
+            cross_b_results["median_utility"],
+            cross_b_test_metrics,
+        )
 
     # Enhanced comparison section
     console.print(f"\n{'='*80}")
@@ -1270,6 +1370,79 @@ def run_leaf_alignment_baseline(
 
     console.print(comparison_table)
 
+    # Add decomposition analysis if cross-test is enabled
+    if cross_test:
+        console.print(f"\n{'='*80}")
+        console.print(f"[bold cyan]Decomposition Analysis (2x2 Matrix)[/bold cyan]")
+        console.print(f"{'='*80}")
+
+        # Create 2x2 matrix table for utility scores
+        matrix_table = Table(show_header=True, title="Utility Score Matrix")
+        matrix_table.add_column("Data \\ Params", style="bold")
+        matrix_table.add_column("Deployment Params", justify="right")
+        matrix_table.add_column("Optimal Params", justify="right")
+
+        matrix_table.add_row(
+            "Unsampled Data",
+            f"{deployment_results['median_utility']:.4f}",
+            f"{cross_a_results['median_utility']:.4f}",
+        )
+        matrix_table.add_row(
+            "Training Data",
+            f"{cross_b_results['median_utility']:.4f}",
+            f"{optimal_results['median_utility']:.4f}",
+        )
+
+        console.print(matrix_table)
+
+        # Decomposition
+        console.print(f"\n[bold]Effect Decomposition:[/bold]")
+
+        # Pure data effect (holding params constant)
+        data_effect_deployment_params = cross_b_results["median_utility"] - deployment_results["median_utility"]
+        data_effect_optimal_params = optimal_results["median_utility"] - cross_a_results["median_utility"]
+        avg_data_effect = (data_effect_deployment_params + data_effect_optimal_params) / 2
+
+        # Pure hyperparameter effect (holding data constant)
+        param_effect_unsampled_data = cross_a_results["median_utility"] - deployment_results["median_utility"]
+        param_effect_training_data = optimal_results["median_utility"] - cross_b_results["median_utility"]
+        avg_param_effect = (param_effect_unsampled_data + param_effect_training_data) / 2
+
+        # Interaction effect
+        total_gap = optimal_results["median_utility"] - deployment_results["median_utility"]
+        interaction_effect = total_gap - (avg_data_effect + avg_param_effect)
+
+        data_color = "green" if avg_data_effect > 0 else "red"
+        param_color = "green" if avg_param_effect > 0 else "red"
+        interaction_color = "green" if interaction_effect > 0 else "red" if interaction_effect < 0 else "yellow"
+
+        console.print(f"\n  [bold]Pure Data Effect:[/bold] [{data_color}]{avg_data_effect:+.4f}[/{data_color}]")
+        console.print(f"    (Training data vs Unsampled, averaged across both param sets)")
+        console.print(f"    - With deployment params: {data_effect_deployment_params:+.4f}")
+        console.print(f"    - With optimal params:    {data_effect_optimal_params:+.4f}")
+
+        console.print(f"\n  [bold]Pure Hyperparameter Effect:[/bold] [{param_color}]{avg_param_effect:+.4f}[/{param_color}]")
+        console.print(f"    (Optimal params vs Deployment params, averaged across both datasets)")
+        console.print(f"    - On unsampled data: {param_effect_unsampled_data:+.4f}")
+        console.print(f"    - On training data:  {param_effect_training_data:+.4f}")
+
+        console.print(f"\n  [bold]Interaction Effect:[/bold] [{interaction_color}]{interaction_effect:+.4f}[/{interaction_color}]")
+        console.print(f"    (Non-additive interaction between data and params)")
+
+        console.print(f"\n  [bold]Total Gap:[/bold] {total_gap:+.4f}")
+        console.print(f"    = Data Effect ({avg_data_effect:+.4f}) + Param Effect ({avg_param_effect:+.4f}) + Interaction ({interaction_effect:+.4f})")
+
+        # Show percentage contributions
+        if total_gap != 0:
+            data_pct = (avg_data_effect / total_gap * 100)
+            param_pct = (avg_param_effect / total_gap * 100)
+            interaction_pct = (interaction_effect / total_gap * 100)
+
+            console.print(f"\n  [bold]Contribution Breakdown:[/bold]")
+            console.print(f"    Data quality:    {data_pct:>6.1f}%")
+            console.print(f"    Hyperparameters: {param_pct:>6.1f}%")
+            console.print(f"    Interaction:     {interaction_pct:>6.1f}%")
+
     # Save summary
     summary = {
         "metadata": {
@@ -1279,6 +1452,7 @@ def run_leaf_alignment_baseline(
                 "n_estimators": n_estimators,
                 "target_column": target_column,
                 "random_state": random_state,
+                "cross_test": cross_test,
             },
         },
         "deployment_baseline": {
@@ -1309,6 +1483,42 @@ def run_leaf_alignment_baseline(
             },
         },
     }
+
+    # Add cross-test results to summary if available
+    if cross_test:
+        summary["cross_test_a"] = {
+            "description": "Unsampled (40k) → Test (10k) with optimal hyperparameters",
+            "training_samples": len(X_deployment),
+            "test_samples": len(X_test),
+            **cross_a_results,
+            "test_evaluation": cross_a_test_metrics,
+        }
+        summary["cross_test_b"] = {
+            "description": "Training (10k) → Test (10k) with deployment hyperparameters",
+            "training_samples": len(X_optimal),
+            "test_samples": len(X_test),
+            **cross_b_results,
+            "test_evaluation": cross_b_test_metrics,
+        }
+        summary["decomposition"] = {
+            "data_effect": {
+                "average": float(avg_data_effect),
+                "with_deployment_params": float(data_effect_deployment_params),
+                "with_optimal_params": float(data_effect_optimal_params),
+            },
+            "hyperparameter_effect": {
+                "average": float(avg_param_effect),
+                "on_unsampled_data": float(param_effect_unsampled_data),
+                "on_training_data": float(param_effect_training_data),
+            },
+            "interaction_effect": float(interaction_effect),
+            "total_gap": float(total_gap),
+            "contribution_percentages": {
+                "data_quality_pct": float(data_pct) if total_gap != 0 else 0.0,
+                "hyperparameters_pct": float(param_pct) if total_gap != 0 else 0.0,
+                "interaction_pct": float(interaction_pct) if total_gap != 0 else 0.0,
+            },
+        }
 
     summary_path = dseed_dir / "leaf_alignment_summary.json"
     with open(summary_path, "w") as f:
