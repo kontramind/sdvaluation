@@ -209,24 +209,38 @@ class LGBMTuner:
         Returns:
             Mean AUROC across folds
         """
+        # Scale search space based on dataset size to prevent overfitting
+        n_samples = len(self.X_train)
+
+        if n_samples < 15000:
+            # Constrained ranges for small datasets (< 15k samples)
+            max_leaves_upper = 50
+            max_depth_upper = 8
+            min_reg_lambda = 0.5  # Force regularization
+        else:
+            # Wider ranges for large datasets (>= 15k samples)
+            max_leaves_upper = 100
+            max_depth_upper = 12
+            min_reg_lambda = 0.1
+
         # Core hyperparameters
         params = {
             "objective": "binary",
             "metric": "auc",
             "verbosity": -1,
             "boosting_type": trial.suggest_categorical("boosting_type", ["gbdt", "goss"]),
-            "num_leaves": trial.suggest_int("num_leaves", 4, 100),
-            "max_depth": trial.suggest_int("max_depth", 1, 15),
+            "num_leaves": trial.suggest_int("num_leaves", 10, max_leaves_upper),  # Min 10, adaptive max
+            "max_depth": trial.suggest_int("max_depth", 3, max_depth_upper),  # Min 3, adaptive max
             "learning_rate": trial.suggest_float("learning_rate", 2**(-10), 2**0, log=True),
-            "min_child_samples": trial.suggest_int("min_child_samples", 1, 60),
+            "min_child_samples": trial.suggest_int("min_child_samples", 5, 60),  # Min 5
             "n_estimators": 1000,  # Large number, will use early stopping
             "random_state": self.random_state,
             "n_jobs": self.n_jobs,
         }
 
-        # Regularization (wider ranges for better exploration)
-        params["reg_alpha"] = trial.suggest_float("reg_alpha", 0.0, 10.0)  # L1
-        params["reg_lambda"] = trial.suggest_float("reg_lambda", 0.0, 10.0)  # L2
+        # Regularization with mandatory minimum for small datasets
+        params["reg_alpha"] = trial.suggest_float("reg_alpha", 0.0, 5.0)  # L1
+        params["reg_lambda"] = trial.suggest_float("reg_lambda", min_reg_lambda, 10.0)  # L2 with minimum
 
         # Feature and sample sampling
         params["feature_fraction"] = trial.suggest_float("feature_fraction", 0.5, 1.0)
@@ -520,7 +534,8 @@ def optimize_threshold(
     all_y_proba = np.array(all_y_proba)
 
     # Find optimal threshold
-    thresholds = np.linspace(0.1, 0.9, 81)  # Test 81 thresholds
+    # Expanded range for imbalanced data (class imbalance often needs thresholds < 0.1)
+    thresholds = np.linspace(0.01, 0.9, 90)  # Test 90 thresholds from 0.01 to 0.9
     best_threshold = 0.5
     best_score = 0.0
 
@@ -772,7 +787,8 @@ def tune_hyperparameters(
         all_y_proba = np.array(all_y_proba)
 
         # Find optimal threshold
-        thresholds = np.arange(0.1, 0.9, 0.02)
+        # Expanded range for imbalanced data (class imbalance often needs thresholds < 0.1)
+        thresholds = np.arange(0.01, 0.9, 0.01)  # Step by 0.01 from 0.01 to 0.9
         best_score = -np.inf
         best_threshold = 0.5
 
@@ -968,6 +984,20 @@ def tune_dual_scenario(
         optimal_val = optimal_results["best_params"][key]
         if isinstance(deploy_val, (int, float)) and isinstance(optimal_val, (int, float)):
             param_diff[key] = float(optimal_val - deploy_val)
+
+    # Validation: warn if optimal params are worse than deployment
+    cv_score_gap = optimal_results["best_cv_score"] - deployment_results["best_cv_score"]
+    if cv_score_gap < -0.001:  # If optimal is worse by more than 0.1%
+        console.print(
+            f"\n[bold yellow]⚠ Warning:[/bold yellow] Optimal CV score ({optimal_results['best_cv_score']:.4f}) "
+            f"is worse than Deployment CV score ({deployment_results['best_cv_score']:.4f})."
+        )
+        console.print(
+            f"[yellow]This suggests the hyperparameter tuning may have overfit to the smaller training dataset.[/yellow]"
+        )
+        console.print(
+            f"[yellow]Consider using deployment parameters or increasing training data size.[/yellow]"
+        )
 
     # Create output dictionary
     output = {
