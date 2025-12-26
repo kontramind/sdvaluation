@@ -47,6 +47,7 @@ except ImportError:
     )
 
 from .encoding import RDTDatasetEncoder, load_encoding_config
+from .leaf_alignment import run_leaf_alignment
 
 # Suppress warnings
 warnings.filterwarnings("ignore")
@@ -1021,3 +1022,188 @@ def tune_dual_scenario(
     console.print(f"[green]Results saved to: {output_path}[/green]")
 
     return output
+
+
+def run_leaf_alignment_baseline(
+    dseed_dir: Path,
+    target_column: str = "READMIT",
+    n_estimators: int = 500,
+    n_jobs: int = 1,
+    random_state: int = 42,
+) -> Dict[str, Any]:
+    """
+    Run leaf alignment baseline analysis on real training data.
+
+    Evaluates how well real training data represents real test data using
+    leaf co-occurrence analysis. Runs both deployment and optimal scenarios.
+
+    Args:
+        dseed_dir: Path to dseed directory
+        target_column: Name of target column
+        n_estimators: Number of trees for leaf alignment
+        n_jobs: Number of parallel jobs
+        random_state: Random seed
+
+    Returns:
+        Dictionary with baseline results
+    """
+    dseed_dir = Path(dseed_dir)
+
+    # Discover files
+    console.print(f"\n[bold]Discovering files in {dseed_dir.name}...[/bold]")
+    discovery = DseedFileDiscovery(dseed_dir)
+    console.print(discovery)
+
+    # Check for required files
+    if discovery.files["test"] is None:
+        raise FileNotFoundError(
+            f"Test data not found in {dseed_dir}. "
+            "Leaf alignment requires test data for evaluation."
+        )
+
+    # Load hyperparameters
+    hyperparams_path = dseed_dir / "hyperparams.json"
+    if not hyperparams_path.exists():
+        raise FileNotFoundError(
+            f"hyperparams.json not found in {dseed_dir}. "
+            "Please run 'sdvaluation tune' first to generate hyperparameters."
+        )
+
+    console.print(f"\n[bold]Loading hyperparameters...[/bold]")
+    with open(hyperparams_path, "r") as f:
+        hyperparams = json.load(f)
+
+    deployment_params = hyperparams["deployment"]["lgbm_params"]
+    optimal_params = hyperparams["optimal"]["lgbm_params"]
+
+    console.print(f"  ✓ Deployment params loaded")
+    console.print(f"  ✓ Optimal params loaded")
+
+    # Load and encode data
+    console.print(f"\n[bold]Loading and encoding data...[/bold]")
+
+    console.print("[cyan]Loading deployment data (unsampled)...[/cyan]")
+    X_deployment, y_deployment = load_and_encode_data(
+        discovery.get_file("unsampled"),
+        discovery.get_file("encoding"),
+        target_column,
+    )
+    console.print(f"  Samples: {len(X_deployment):,}")
+
+    console.print("[cyan]Loading optimal data (training)...[/cyan]")
+    X_optimal, y_optimal = load_and_encode_data(
+        discovery.get_file("training"),
+        discovery.get_file("encoding"),
+        target_column,
+    )
+    console.print(f"  Samples: {len(X_optimal):,}")
+
+    console.print("[cyan]Loading test data...[/cyan]")
+    X_test, y_test = load_and_encode_data(
+        discovery.get_file("test"),
+        discovery.get_file("encoding"),
+        target_column,
+    )
+    console.print(f"  Samples: {len(X_test):,}")
+
+    # Run deployment baseline
+    console.print(f"\n[bold yellow]Scenario 1: Deployment Baseline (Unsampled → Test)[/bold yellow]")
+    console.print(f"  Training {n_estimators} trees on {len(X_deployment):,} unsampled points...")
+
+    deployment_output = dseed_dir / "leaf_alignment_deployment_baseline.csv"
+    deployment_results = run_leaf_alignment(
+        X_synthetic=X_deployment,
+        y_synthetic=y_deployment,
+        X_real_test=X_test,
+        y_real_test=y_test,
+        lgbm_params=deployment_params,
+        output_file=deployment_output,
+        n_estimators=n_estimators,
+        n_jobs=n_jobs,
+        random_state=random_state,
+    )
+
+    console.print(f"\n[bold]Deployment Baseline Results:[/bold]")
+    console.print(f"  Median Utility:    {deployment_results['median_utility']:.4f}")
+    console.print(f"  Mean Utility:      {deployment_results['mean_utility']:.4f}")
+    console.print(f"  Harmful Points:    {deployment_results['harmful_count']:,}/{len(X_test):,} "
+                 f"({deployment_results['harmful_pct']*100:.1f}%)")
+    console.print(f"  Results saved to:  {deployment_output.name}")
+
+    # Run optimal baseline
+    console.print(f"\n[bold green]Scenario 2: Optimal Baseline (Training → Test)[/bold green]")
+    console.print(f"  Training {n_estimators} trees on {len(X_optimal):,} training points...")
+
+    optimal_output = dseed_dir / "leaf_alignment_optimal_baseline.csv"
+    optimal_results = run_leaf_alignment(
+        X_synthetic=X_optimal,
+        y_synthetic=y_optimal,
+        X_real_test=X_test,
+        y_real_test=y_test,
+        lgbm_params=optimal_params,
+        output_file=optimal_output,
+        n_estimators=n_estimators,
+        n_jobs=n_jobs,
+        random_state=random_state,
+    )
+
+    console.print(f"\n[bold]Optimal Baseline Results:[/bold]")
+    console.print(f"  Median Utility:    {optimal_results['median_utility']:.4f}")
+    console.print(f"  Mean Utility:      {optimal_results['mean_utility']:.4f}")
+    console.print(f"  Harmful Points:    {optimal_results['harmful_count']:,}/{len(X_test):,} "
+                 f"({optimal_results['harmful_pct']*100:.1f}%)")
+    console.print(f"  Results saved to:  {optimal_output.name}")
+
+    # Compare scenarios
+    console.print(f"\n[bold magenta]Comparison:[/bold magenta]")
+    utility_gap = optimal_results["median_utility"] - deployment_results["median_utility"]
+    harmful_reduction = deployment_results["harmful_count"] - optimal_results["harmful_count"]
+
+    gap_color = "green" if utility_gap > 0 else "red"
+    console.print(f"  Utility Gap (Optimal - Deployment): [{gap_color}]{utility_gap:+.4f}[/{gap_color}]")
+
+    if harmful_reduction > 0:
+        reduction_pct = (harmful_reduction / deployment_results["harmful_count"] * 100) if deployment_results["harmful_count"] > 0 else 0
+        console.print(f"  Harmful Reduction: [green]{harmful_reduction:,} fewer points ({reduction_pct:.1f}% improvement)[/green]")
+    elif harmful_reduction < 0:
+        console.print(f"  Harmful Increase: [red]{abs(harmful_reduction):,} more points[/red]")
+    else:
+        console.print(f"  Harmful Count: Same in both scenarios")
+
+    # Save summary
+    summary = {
+        "metadata": {
+            "dseed": dseed_dir.name,
+            "created_at": datetime.now().isoformat(),
+            "config": {
+                "n_estimators": n_estimators,
+                "target_column": target_column,
+                "random_state": random_state,
+            },
+        },
+        "deployment_baseline": {
+            "description": "Unsampled (40k) → Test (10k) with deployment hyperparameters",
+            "training_samples": len(X_deployment),
+            "test_samples": len(X_test),
+            **deployment_results,
+        },
+        "optimal_baseline": {
+            "description": "Training (10k) → Test (10k) with optimal hyperparameters",
+            "training_samples": len(X_optimal),
+            "test_samples": len(X_test),
+            **optimal_results,
+        },
+        "comparison": {
+            "utility_gap": float(utility_gap),
+            "harmful_reduction": int(harmful_reduction),
+            "harmful_reduction_pct": float(reduction_pct) if harmful_reduction > 0 else 0.0,
+        },
+    }
+
+    summary_path = dseed_dir / "leaf_alignment_summary.json"
+    with open(summary_path, "w") as f:
+        json.dump(summary, f, indent=2)
+
+    console.print(f"\n[bold]Summary saved to: {summary_path.name}[/bold]")
+
+    return summary
