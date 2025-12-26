@@ -1074,10 +1074,12 @@ def run_leaf_alignment_baseline(
         hyperparams = json.load(f)
 
     deployment_params = hyperparams["deployment"]["lgbm_params"]
+    deployment_threshold = hyperparams["deployment"]["optimal_threshold"]
     optimal_params = hyperparams["optimal"]["lgbm_params"]
+    optimal_threshold = hyperparams["optimal"]["optimal_threshold"]
 
-    console.print(f"  ✓ Deployment params loaded")
-    console.print(f"  ✓ Optimal params loaded")
+    console.print(f"  ✓ Deployment params loaded (threshold: {deployment_threshold:.3f})")
+    console.print(f"  ✓ Optimal params loaded (threshold: {optimal_threshold:.3f})")
 
     # Load and encode data
     console.print(f"\n[bold]Loading and encoding data...[/bold]")
@@ -1132,6 +1134,18 @@ def run_leaf_alignment_baseline(
                  f"({deployment_results['pct_beneficial']:.1f}%)")
     console.print(f"  Results saved to:  {deployment_output.name}")
 
+    # Evaluate on test data
+    console.print(f"\n[cyan]Evaluating deployment model on test data...[/cyan]")
+    deployment_test_metrics = evaluate_on_test(
+        params=deployment_params,
+        X_train=X_deployment,
+        y_train=y_deployment,
+        X_test=X_test,
+        y_test=y_test,
+        threshold=deployment_threshold,
+        seed=random_state,
+    )
+
     # Run optimal baseline
     console.print(f"\n[bold green]Scenario 2: Optimal Baseline (Training → Test)[/bold green]")
     console.print(f"  Training {n_estimators} trees on {len(X_optimal):,} training points...")
@@ -1158,21 +1172,103 @@ def run_leaf_alignment_baseline(
                  f"({optimal_results['pct_beneficial']:.1f}%)")
     console.print(f"  Results saved to:  {optimal_output.name}")
 
-    # Compare scenarios
-    console.print(f"\n[bold magenta]Comparison:[/bold magenta]")
-    utility_gap = optimal_results["median_utility"] - deployment_results["median_utility"]
-    hallucinated_reduction = deployment_results["n_hallucinated"] - optimal_results["n_hallucinated"]
+    # Evaluate on test data
+    console.print(f"\n[cyan]Evaluating optimal model on test data...[/cyan]")
+    optimal_test_metrics = evaluate_on_test(
+        params=optimal_params,
+        X_train=X_optimal,
+        y_train=y_optimal,
+        X_test=X_test,
+        y_test=y_test,
+        threshold=optimal_threshold,
+        seed=random_state,
+    )
 
+    # Display test evaluation results
+    console.print(f"\n{'='*80}")
+    console.print(f"[bold magenta]Test Data Evaluation Results[/bold magenta]")
+    console.print(f"{'='*80}")
+
+    # Display deployment test evaluation
+    display_test_evaluation(
+        "Deployment Baseline (Unsampled → Test)",
+        deployment_results["median_utility"],  # Use median utility as proxy for CV score
+        deployment_test_metrics,
+    )
+
+    # Display optimal test evaluation
+    display_test_evaluation(
+        "Optimal Baseline (Training → Test)",
+        optimal_results["median_utility"],  # Use median utility as proxy for CV score
+        optimal_test_metrics,
+    )
+
+    # Enhanced comparison section
+    console.print(f"\n{'='*80}")
+    console.print(f"[bold magenta]Scenario Comparison[/bold magenta]")
+    console.print(f"{'='*80}")
+
+    # Utility comparison
+    utility_gap = optimal_results["median_utility"] - deployment_results["median_utility"]
     gap_color = "green" if utility_gap > 0 else "red"
-    console.print(f"  Utility Gap (Optimal - Deployment): [{gap_color}]{utility_gap:+.4f}[/{gap_color}]")
+    console.print(f"\n[bold]Utility Scores:[/bold]")
+    console.print(f"  Deployment Median: {deployment_results['median_utility']:.4f}")
+    console.print(f"  Optimal Median:    {optimal_results['median_utility']:.4f}")
+    console.print(f"  Gap (Opt - Dep):   [{gap_color}]{utility_gap:+.4f}[/{gap_color}]")
+
+    # Hallucination comparison
+    hallucinated_reduction = deployment_results["n_hallucinated"] - optimal_results["n_hallucinated"]
+    console.print(f"\n[bold]Hallucinated Points:[/bold]")
+    console.print(f"  Deployment: {deployment_results['n_hallucinated']:,}/{deployment_results['n_total']:,} ({deployment_results['pct_hallucinated']:.1f}%)")
+    console.print(f"  Optimal:    {optimal_results['n_hallucinated']:,}/{optimal_results['n_total']:,} ({optimal_results['pct_hallucinated']:.1f}%)")
 
     if hallucinated_reduction > 0:
         reduction_pct = (hallucinated_reduction / deployment_results["n_hallucinated"] * 100) if deployment_results["n_hallucinated"] > 0 else 0
-        console.print(f"  Hallucinated Reduction: [green]{hallucinated_reduction:,} fewer points ({reduction_pct:.1f}% improvement)[/green]")
+        console.print(f"  Reduction:  [green]{hallucinated_reduction:,} fewer points ({reduction_pct:.1f}% improvement)[/green]")
     elif hallucinated_reduction < 0:
-        console.print(f"  Hallucinated Increase: [red]{abs(hallucinated_reduction):,} more points[/red]")
+        console.print(f"  Increase:   [red]{abs(hallucinated_reduction):,} more points[/red]")
     else:
-        console.print(f"  Hallucinated Count: Same in both scenarios")
+        console.print(f"  Change:     Same in both scenarios")
+
+    # Test metrics comparison
+    console.print(f"\n[bold]Test Performance Metrics:[/bold]")
+
+    # Create comparison table
+    comparison_table = Table(show_header=True, title="Deployment vs Optimal")
+    comparison_table.add_column("Metric", style="bold")
+    comparison_table.add_column("Deployment", justify="right")
+    comparison_table.add_column("Optimal", justify="right")
+    comparison_table.add_column("Δ (Opt - Dep)", justify="right")
+
+    # Add metrics rows
+    metrics_to_compare = [
+        ("AUROC", "auroc", True),
+        ("F1 Score", "f1", True),
+        ("Precision", "precision", True),
+        ("Recall", "recall", True),
+        ("FPR", "fpr", False),
+        ("FNR", "fnr", False),
+    ]
+
+    for metric_name, metric_key, higher_is_better in metrics_to_compare:
+        deploy_val = deployment_test_metrics[metric_key]
+        optimal_val = optimal_test_metrics[metric_key]
+        delta = optimal_val - deploy_val
+
+        # Color the delta based on whether it's an improvement
+        if higher_is_better:
+            delta_color = "green" if delta > 0 else "red" if delta < 0 else "yellow"
+        else:
+            delta_color = "green" if delta < 0 else "red" if delta > 0 else "yellow"
+
+        comparison_table.add_row(
+            metric_name,
+            f"{deploy_val:.4f}",
+            f"{optimal_val:.4f}",
+            f"[{delta_color}]{delta:+.4f}[/{delta_color}]",
+        )
+
+    console.print(comparison_table)
 
     # Save summary
     summary = {
@@ -1190,17 +1286,27 @@ def run_leaf_alignment_baseline(
             "training_samples": len(X_deployment),
             "test_samples": len(X_test),
             **deployment_results,
+            "test_evaluation": deployment_test_metrics,
         },
         "optimal_baseline": {
             "description": "Training (10k) → Test (10k) with optimal hyperparameters",
             "training_samples": len(X_optimal),
             "test_samples": len(X_test),
             **optimal_results,
+            "test_evaluation": optimal_test_metrics,
         },
         "comparison": {
             "utility_gap": float(utility_gap),
             "hallucinated_reduction": int(hallucinated_reduction),
             "hallucinated_reduction_pct": float(reduction_pct) if hallucinated_reduction > 0 else 0.0,
+            "test_metrics_delta": {
+                "auroc": float(optimal_test_metrics["auroc"] - deployment_test_metrics["auroc"]),
+                "f1": float(optimal_test_metrics["f1"] - deployment_test_metrics["f1"]),
+                "precision": float(optimal_test_metrics["precision"] - deployment_test_metrics["precision"]),
+                "recall": float(optimal_test_metrics["recall"] - deployment_test_metrics["recall"]),
+                "fpr": float(optimal_test_metrics["fpr"] - deployment_test_metrics["fpr"]),
+                "fnr": float(optimal_test_metrics["fnr"] - deployment_test_metrics["fnr"]),
+            },
         },
     }
 
