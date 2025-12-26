@@ -559,6 +559,11 @@ def leaf_alignment_baseline(
         "--seed",
         help="Random seed for reproducibility",
     ),
+    cross_test: bool = typer.Option(
+        False,
+        "--cross-test",
+        help="Include cross-test scenarios (unsampled+optimal params, training+deployment params)",
+    ),
 ) -> None:
     """
     Establish leaf alignment baseline using real training data.
@@ -567,7 +572,7 @@ def leaf_alignment_baseline(
     data using leaf co-occurrence analysis. It provides a baseline for later
     comparing synthetic data quality.
 
-    The command runs two scenarios:
+    The command runs two scenarios by default:
 
     Scenario 1 (Deployment Baseline): Unsampled → Test
     - Trains on 40k unsampled (population) data with deployment hyperparams
@@ -579,6 +584,19 @@ def leaf_alignment_baseline(
     - Evaluates on 10k real test data
     - Shows: Sampled training data quality baseline
 
+    With --cross-test flag, adds two additional scenarios:
+
+    Scenario 3 (Cross-test A): Unsampled → Test (with optimal hyperparams)
+    - Tests: How much do optimal hyperparams improve unsampled data?
+
+    Scenario 4 (Cross-test B): Training → Test (with deployment hyperparams)
+    - Tests: How robust is training data to suboptimal hyperparams?
+
+    This enables decomposition analysis to separate:
+    - Pure data quality effect (unsampled vs training data)
+    - Pure hyperparameter effect (deployment vs optimal params)
+    - Interaction effects
+
     Requirements:
     - hyperparams.json must exist in dseed directory (run 'tune' first)
     - Test data must be available
@@ -586,6 +604,7 @@ def leaf_alignment_baseline(
     Output files (saved to dseed directory):
     - leaf_alignment_deployment_baseline.csv: Per-point utilities
     - leaf_alignment_optimal_baseline.csv: Per-point utilities
+    - leaf_alignment_cross_*.csv: Cross-test utilities (if --cross-test)
     - leaf_alignment_summary.json: Summary statistics
 
     Example usage:
@@ -593,17 +612,23 @@ def leaf_alignment_baseline(
         # After running tune command
         $ sdvaluation tune --dseed-dir dseed6765/
 
-        # Establish baseline
+        # Standard 2-scenario baseline
         $ sdvaluation leaf-alignment --dseed-dir dseed6765/
+
+        # Full 4-scenario analysis with decomposition
+        $ sdvaluation leaf-alignment --dseed-dir dseed6765/ --cross-test
 
         # With more trees for tighter confidence intervals
         $ sdvaluation leaf-alignment \\
             --dseed-dir dseed6765/ \\
             --n-estimators 1000 \\
-            --n-jobs -1
+            --n-jobs -1 \\
+            --cross-test
     """
     try:
         console.print("\n[bold]Leaf Alignment Baseline Analysis[/bold]")
+        if cross_test:
+            console.print("[cyan](Including cross-test scenarios)[/cyan]")
         console.print("=" * 60)
 
         # Run baseline analysis
@@ -613,6 +638,7 @@ def leaf_alignment_baseline(
             n_estimators=n_estimators,
             n_jobs=n_jobs,
             random_state=random_state,
+            cross_test=cross_test,
         )
 
         console.print("\n" + "=" * 60)
