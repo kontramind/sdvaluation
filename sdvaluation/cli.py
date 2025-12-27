@@ -325,9 +325,9 @@ def tune_hyperparameters(
 
         # Display summary
         console.print("\n[bold]Summary:[/bold]")
-        console.print(f"  CV ROC-AUC:       {results['hyperparams']['best_cv_score']:.4f}")
-        console.print(f"  Test ROC-AUC:     {results['hyperparams']['test_evaluation']['test_auroc']:.4f}")
-        console.print(f"  CV→Test Gap:      {results['hyperparams']['test_evaluation']['test_auroc'] - results['hyperparams']['best_cv_score']:+.4f}")
+        console.print(f"  CV ROC-AUC:        {results['hyperparams']['best_cv_score']:.4f}")
+        console.print(f"  Test ROC-AUC:      {results['hyperparams']['test_evaluation']['auroc']:.4f}")
+        console.print(f"  CV→Test Gap:       {results['hyperparams']['test_evaluation']['auroc'] - results['hyperparams']['best_cv_score']:+.4f}")
         console.print(f"  Optimal Threshold: {results['hyperparams']['optimal_threshold']:.3f}")
 
         console.print(f"\n[bold green]✓ Hyperparameter tuning completed successfully![/bold green]\n")
