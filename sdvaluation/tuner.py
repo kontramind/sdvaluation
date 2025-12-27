@@ -1106,7 +1106,7 @@ def evaluate_synthetic(
     table.add_column("Value", justify="right", width=20)
     table.add_column("Percentage", justify="right", width=15)
 
-    total_points = leaf_results["total_points"]
+    total_points = leaf_results["n_total"]
     table.add_row("Total synthetic points", f"{total_points:,}", "100.0%")
     table.add_row(
         "[green]Beneficial points[/green]",
@@ -1114,14 +1114,14 @@ def evaluate_synthetic(
         f"{leaf_results['pct_beneficial']:.1f}%",
     )
     table.add_row(
-        "[red]Harmful points[/red]",
-        f"{leaf_results['n_harmful']:,}",
-        f"{leaf_results['pct_harmful']:.1f}%",
-    )
-    table.add_row(
         "[yellow]Hallucinated points[/yellow]",
         f"{leaf_results['n_hallucinated']:,}",
         f"{leaf_results['pct_hallucinated']:.1f}%",
+    )
+    table.add_row(
+        "[cyan]Uncertain points[/cyan]",
+        f"{leaf_results['n_uncertain']:,}",
+        f"{leaf_results['pct_uncertain']:.1f}%",
     )
     table.add_row("", "", "")
     table.add_row(
@@ -1130,8 +1130,8 @@ def evaluate_synthetic(
         "",
     )
     table.add_row(
-        "Std utility",
-        f"{leaf_results['std_utility']:.4f}",
+        "Median utility",
+        f"{leaf_results['median_utility']:.4f}",
         "",
     )
 
