@@ -124,7 +124,7 @@ class DseedFileDiscovery:
                 discovered["metadata"] = file_path
 
         # Validate required files exist
-        required = ["encoding", "training", "unsampled"]
+        required = ["encoding", "training"]
         missing = [k for k in required if discovered[k] is None]
 
         if missing:
@@ -836,7 +836,12 @@ def tune_dual_scenario(
     output_name: str = "hyperparams.json",
 ) -> Dict[str, Any]:
     """
-    Tune hyperparameters for both deployment and optimal scenarios.
+    Tune hyperparameters on training data and evaluate on test data.
+
+    Simplified tuning workflow:
+    1. Tune hyperparameters on real training data
+    2. Optimize classification threshold
+    3. Evaluate on test data with confusion matrix
 
     Args:
         dseed_dir: Path to dseed directory
@@ -858,153 +863,81 @@ def tune_dual_scenario(
     discovery = DseedFileDiscovery(dseed_dir)
     console.print(discovery)
 
+    # Validate test data exists
+    if discovery.files["test"] is None:
+        raise FileNotFoundError(
+            f"Test data not found in {dseed_dir}. "
+            "Test data is required for hyperparameter tuning evaluation."
+        )
+
     # Load and encode data
     console.print(f"\n[bold]Loading and encoding data...[/bold]")
 
-    console.print("[cyan]Loading deployment data (unsampled)...[/cyan]")
-    X_deployment, y_deployment = load_and_encode_data(
-        discovery.get_file("unsampled"),
-        discovery.get_file("encoding"),
-        target_column,
-    )
-    console.print(f"  Samples: {len(X_deployment):,}")
-
-    console.print("[cyan]Loading optimal data (training)...[/cyan]")
-    X_optimal, y_optimal = load_and_encode_data(
+    console.print("[cyan]Loading training data...[/cyan]")
+    X_train, y_train = load_and_encode_data(
         discovery.get_file("training"),
         discovery.get_file("encoding"),
         target_column,
     )
-    console.print(f"  Samples: {len(X_optimal):,}")
+    console.print(f"  Samples: {len(X_train):,}")
+    console.print(f"  Class balance: {np.mean(y_train == 1):.1%} positive")
 
-    # Tune deployment scenario
-    console.print(f"\n[bold yellow]Scenario 1: Deployment (unsampled data)[/bold yellow]")
-    deployment_results = optimize_hyperparameters(
-        X_deployment,
-        y_deployment,
+    console.print("[cyan]Loading test data...[/cyan]")
+    X_test, y_test = load_and_encode_data(
+        discovery.get_file("test"),
+        discovery.get_file("encoding"),
+        target_column,
+    )
+    console.print(f"  Samples: {len(X_test):,}")
+    console.print(f"  Class balance: {np.mean(y_test == 1):.1%} positive")
+
+    # Tune hyperparameters
+    console.print(f"\n[bold green]Tuning hyperparameters on training data[/bold green]")
+    tuning_results = optimize_hyperparameters(
+        X_train,
+        y_train,
         n_trials=n_trials,
         n_folds=n_folds,
         n_jobs=n_jobs,
         seed=seed,
     )
 
-    # Optimize threshold for deployment
-    deployment_model = LGBMClassifier(**deployment_results["best_params"])
-    deployment_threshold = optimize_threshold(
-        deployment_model,
-        X_deployment,
-        y_deployment,
+    # Optimize threshold
+    model = LGBMClassifier(**tuning_results["best_params"])
+    threshold_results = optimize_threshold(
+        model,
+        X_train,
+        y_train,
         metric=threshold_metric,
         n_folds=n_folds,
         seed=seed,
     )
 
-    # Tune optimal scenario
-    console.print(f"\n[bold green]Scenario 2: Optimal (training data)[/bold green]")
-    optimal_results = optimize_hyperparameters(
-        X_optimal,
-        y_optimal,
-        n_trials=n_trials,
-        n_folds=n_folds,
-        n_jobs=n_jobs,
+    # Evaluate on test data
+    console.print(f"\n[bold magenta]Evaluating on test data[/bold magenta]")
+    test_metrics = evaluate_on_test(
+        params=tuning_results["best_params"],
+        X_train=X_train,
+        y_train=y_train,
+        X_test=X_test,
+        y_test=y_test,
+        threshold=threshold_results["optimal_threshold"],
         seed=seed,
     )
 
-    # Optimize threshold for optimal
-    optimal_model = LGBMClassifier(**optimal_results["best_params"])
-    optimal_threshold = optimize_threshold(
-        optimal_model,
-        X_optimal,
-        y_optimal,
-        metric=threshold_metric,
-        n_folds=n_folds,
-        seed=seed,
+    # Display results
+    display_test_evaluation(
+        "Training → Test",
+        tuning_results["best_cv_score"],
+        test_metrics,
     )
 
-    # Evaluate on test data if available
-    deployment_test_metrics = None
-    optimal_test_metrics = None
-
-    if discovery.files["test"] is not None:
-        console.print(f"\n[bold magenta]Evaluating on Test Data[/bold magenta]")
-
-        # Load test data
-        console.print("[cyan]Loading test data...[/cyan]")
-        X_test, y_test = load_and_encode_data(
-            discovery.get_file("test"),
-            discovery.get_file("encoding"),
-            target_column,
-        )
-        console.print(f"  Samples: {len(X_test):,}")
-
-        # Evaluate deployment model on test data
-        deployment_test_metrics = evaluate_on_test(
-            params=deployment_results["best_params"],
-            X_train=X_deployment,
-            y_train=y_deployment,
-            X_test=X_test,
-            y_test=y_test,
-            threshold=deployment_threshold["optimal_threshold"],
-            seed=seed,
-        )
-
-        # Evaluate optimal model on test data
-        optimal_test_metrics = evaluate_on_test(
-            params=optimal_results["best_params"],
-            X_train=X_optimal,
-            y_train=y_optimal,
-            X_test=X_test,
-            y_test=y_test,
-            threshold=optimal_threshold["optimal_threshold"],
-            seed=seed,
-        )
-
-        # Display results
-        display_test_evaluation(
-            "Deployment (Unsampled Params)",
-            deployment_results["best_cv_score"],
-            deployment_test_metrics,
-        )
-
-        display_test_evaluation(
-            "Optimal (Training Params)",
-            optimal_results["best_cv_score"],
-            optimal_test_metrics,
-        )
-
-    # Compute parameter differences
-    param_diff = {}
-    for key in deployment_results["best_params"]:
-        if key in ["random_state", "verbose"]:
-            continue
-        # Skip if parameter not in both sets (e.g., is_unbalance vs scale_pos_weight)
-        if key not in optimal_results["best_params"]:
-            continue
-        deploy_val = deployment_results["best_params"][key]
-        optimal_val = optimal_results["best_params"][key]
-        if isinstance(deploy_val, (int, float)) and isinstance(optimal_val, (int, float)):
-            param_diff[key] = float(optimal_val - deploy_val)
-
-    # Validation: warn if optimal params are worse than deployment
-    cv_score_gap = optimal_results["best_cv_score"] - deployment_results["best_cv_score"]
-    if cv_score_gap < -0.001:  # If optimal is worse by more than 0.1%
-        console.print(
-            f"\n[bold yellow]⚠ Warning:[/bold yellow] Optimal CV score ({optimal_results['best_cv_score']:.4f}) "
-            f"is worse than Deployment CV score ({deployment_results['best_cv_score']:.4f})."
-        )
-        console.print(
-            f"[yellow]This suggests the hyperparameter tuning may have overfit to the smaller training dataset.[/yellow]"
-        )
-        console.print(
-            f"[yellow]Consider using deployment parameters or increasing training data size.[/yellow]"
-        )
-
-    # Create output dictionary
+    # Create output dictionary (simplified format)
     output = {
         "metadata": {
             "dseed": dseed_dir.name,
             "created_at": datetime.now().isoformat(),
-            "sdvaluation_version": "0.1.0",
+            "sdvaluation_version": "0.2.0",
             "tuning_config": {
                 "n_trials": n_trials,
                 "n_folds": n_folds,
@@ -1013,33 +946,14 @@ def tune_dual_scenario(
                 "seed": seed,
             },
         },
-        "deployment": {
-            "description": "Hyperparameters tuned on unsampled (population) data",
-            "tuning_data": discovery.get_file("unsampled").name,
-            "tuning_samples": len(X_deployment),
-            "best_cv_score": deployment_results["best_cv_score"],
-            "lgbm_params": deployment_results["best_params"],
-            **deployment_threshold,
-            **({"test_evaluation": deployment_test_metrics} if deployment_test_metrics else {}),
-        },
-        "optimal": {
-            "description": "Hyperparameters tuned on training (real) data",
+        "hyperparams": {
+            "description": "Hyperparameters tuned on real training data",
             "tuning_data": discovery.get_file("training").name,
-            "tuning_samples": len(X_optimal),
-            "best_cv_score": optimal_results["best_cv_score"],
-            "lgbm_params": optimal_results["best_params"],
-            **optimal_threshold,
-            **({"test_evaluation": optimal_test_metrics} if optimal_test_metrics else {}),
-        },
-        "comparison": {
-            "param_differences": param_diff,
-            "cv_score_gap": float(
-                optimal_results["best_cv_score"] - deployment_results["best_cv_score"]
-            ),
-            "threshold_gap": float(
-                optimal_threshold["optimal_threshold"]
-                - deployment_threshold["optimal_threshold"]
-            ),
+            "tuning_samples": len(X_train),
+            "best_cv_score": tuning_results["best_cv_score"],
+            "lgbm_params": tuning_results["best_params"],
+            **threshold_results,
+            "test_evaluation": test_metrics,
         },
     }
 
@@ -1052,6 +966,202 @@ def tune_dual_scenario(
     console.print(f"[green]Results saved to: {output_path}[/green]")
 
     return output
+
+
+def evaluate_synthetic(
+    dseed_dir: Path,
+    synthetic_file: Path,
+    target_column: str = "READMIT",
+    n_estimators: int = 500,
+    n_jobs: int = 1,
+    seed: int = 42,
+    output_file: Optional[Path] = None,
+) -> Dict[str, Any]:
+    """
+    Evaluate synthetic data quality using leaf alignment.
+
+    Workflow:
+    1. Load hyperparameters from hyperparams.json (tuned on real training)
+    2. Train model on synthetic data using those hyperparameters
+    3. Evaluate against real test data via leaf co-occurrence
+    4. Identify beneficial/harmful/hallucinated synthetic points
+
+    Args:
+        dseed_dir: Path to dseed directory with hyperparams.json
+        synthetic_file: Path to synthetic training CSV file
+        target_column: Name of target column
+        n_estimators: Number of trees for leaf alignment (more = tighter CIs)
+        n_jobs: Number of parallel jobs (1=sequential, -1=all CPUs)
+        seed: Random seed
+        output_file: Optional custom output path for CSV (default: dseed_dir/synthetic_evaluation.csv)
+
+    Returns:
+        Dictionary with evaluation results
+    """
+    from .leaf_alignment import run_leaf_alignment
+
+    dseed_dir = Path(dseed_dir)
+    synthetic_file = Path(synthetic_file)
+
+    # Discover files
+    console.print(f"\n[bold]Discovering files in {dseed_dir.name}...[/bold]")
+    discovery = DseedFileDiscovery(dseed_dir)
+    console.print(discovery)
+
+    # Validate test data exists
+    if discovery.files["test"] is None:
+        raise FileNotFoundError(
+            f"Test data not found in {dseed_dir}. "
+            "Test data is required for synthetic evaluation."
+        )
+
+    # Validate synthetic file exists
+    if not synthetic_file.exists():
+        raise FileNotFoundError(f"Synthetic file not found: {synthetic_file}")
+
+    # Load hyperparameters
+    hyperparams_path = dseed_dir / "hyperparams.json"
+    if not hyperparams_path.exists():
+        raise FileNotFoundError(
+            f"hyperparams.json not found in {dseed_dir}. "
+            "Please run 'sdvaluation tune' first to generate hyperparameters."
+        )
+
+    console.print(f"\n[bold]Loading hyperparameters...[/bold]")
+    with open(hyperparams_path, "r") as f:
+        hyperparams_data = json.load(f)
+
+    # Extract LGBM params (handle both old and new format)
+    if "hyperparams" in hyperparams_data:
+        # New simplified format
+        lgbm_params = hyperparams_data["hyperparams"]["lgbm_params"]
+        optimal_threshold = hyperparams_data["hyperparams"]["optimal_threshold"]
+    elif "optimal" in hyperparams_data:
+        # Old dual scenario format
+        lgbm_params = hyperparams_data["optimal"]["lgbm_params"]
+        optimal_threshold = hyperparams_data["optimal"]["optimal_threshold"]
+    else:
+        raise ValueError(
+            f"Unrecognized hyperparams.json format. "
+            f"Expected 'hyperparams' or 'optimal' key."
+        )
+
+    console.print(f"  ✓ Loaded hyperparameters")
+    console.print(f"  Optimal threshold: {optimal_threshold:.3f}")
+
+    # Load and encode data
+    console.print(f"\n[bold]Loading and encoding data...[/bold]")
+
+    console.print("[cyan]Loading synthetic training data...[/cyan]")
+    X_synthetic, y_synthetic = load_and_encode_data(
+        synthetic_file,
+        discovery.get_file("encoding"),
+        target_column,
+    )
+    console.print(f"  Samples: {len(X_synthetic):,}")
+    console.print(f"  Class balance: {np.mean(y_synthetic == 1):.1%} positive")
+
+    console.print("[cyan]Loading real test data...[/cyan]")
+    X_test, y_test = load_and_encode_data(
+        discovery.get_file("test"),
+        discovery.get_file("encoding"),
+        target_column,
+    )
+    console.print(f"  Samples: {len(X_test):,}")
+    console.print(f"  Class balance: {np.mean(y_test == 1):.1%} positive")
+
+    # Set output file path
+    if output_file is None:
+        output_file = dseed_dir / "synthetic_evaluation.csv"
+    else:
+        output_file = Path(output_file)
+
+    # Run leaf alignment
+    console.print(f"\n[bold green]Running leaf alignment analysis[/bold green]")
+    console.print(f"  Training on: Synthetic data ({len(X_synthetic):,} samples)")
+    console.print(f"  Testing on: Real test data ({len(X_test):,} samples)")
+    console.print(f"  Using: Hyperparameters tuned on real training data")
+
+    leaf_results = run_leaf_alignment(
+        X_synthetic=X_synthetic,
+        y_synthetic=y_synthetic,
+        X_real_test=X_test,
+        y_real_test=y_test,
+        lgbm_params=lgbm_params,
+        output_file=output_file,
+        n_estimators=n_estimators,
+        n_jobs=n_jobs,
+        random_state=seed,
+    )
+
+    # Display summary
+    console.print(f"\n[bold cyan]{'═' * 70}[/bold cyan]")
+    console.print(f"[bold cyan]{'Synthetic Data Evaluation Summary':^70}[/bold cyan]")
+    console.print(f"[bold cyan]{'═' * 70}[/bold cyan]\n")
+
+    from rich.table import Table
+
+    table = Table(show_header=True, header_style="bold magenta")
+    table.add_column("Metric", style="cyan", width=30)
+    table.add_column("Value", justify="right", width=20)
+    table.add_column("Percentage", justify="right", width=15)
+
+    total_points = leaf_results["total_points"]
+    table.add_row("Total synthetic points", f"{total_points:,}", "100.0%")
+    table.add_row(
+        "[green]Beneficial points[/green]",
+        f"{leaf_results['n_beneficial']:,}",
+        f"{leaf_results['pct_beneficial']:.1f}%",
+    )
+    table.add_row(
+        "[red]Harmful points[/red]",
+        f"{leaf_results['n_harmful']:,}",
+        f"{leaf_results['pct_harmful']:.1f}%",
+    )
+    table.add_row(
+        "[yellow]Hallucinated points[/yellow]",
+        f"{leaf_results['n_hallucinated']:,}",
+        f"{leaf_results['pct_hallucinated']:.1f}%",
+    )
+    table.add_row("", "", "")
+    table.add_row(
+        "Mean utility",
+        f"{leaf_results['mean_utility']:.4f}",
+        "",
+    )
+    table.add_row(
+        "Std utility",
+        f"{leaf_results['std_utility']:.4f}",
+        "",
+    )
+
+    console.print(table)
+
+    # Save JSON summary
+    summary_path = output_file.parent / f"{output_file.stem}_summary.json"
+    summary_output = {
+        "metadata": {
+            "dseed": dseed_dir.name,
+            "synthetic_file": synthetic_file.name,
+            "created_at": datetime.now().isoformat(),
+            "sdvaluation_version": "0.2.0",
+        },
+        "evaluation": {
+            "n_estimators": n_estimators,
+            "target_column": target_column,
+            "seed": seed,
+        },
+        "results": leaf_results,
+    }
+
+    with open(summary_path, "w") as f:
+        json.dump(summary_output, f, indent=2)
+
+    console.print(f"\n[bold green]✓ Evaluation complete![/bold green]")
+    console.print(f"[green]Per-point utilities saved to: {output_file}[/green]")
+    console.print(f"[green]Summary statistics saved to: {summary_path}[/green]")
+
+    return summary_output
 
 
 def run_leaf_alignment_baseline(

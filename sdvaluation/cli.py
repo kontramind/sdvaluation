@@ -199,7 +199,7 @@ def tune_hyperparameters(
         ...,
         "-d",
         "--dseed-dir",
-        help="Path to dseed directory containing training/unsampled data",
+        help="Path to dseed directory containing training and test data",
         exists=True,
         file_okay=False,
         dir_okay=True,
@@ -646,6 +646,124 @@ def leaf_alignment_baseline(
 
     except Exception as e:
         console.print(f"\n[bold red]Error during baseline analysis:[/bold red] {e}\n")
+        import traceback
+        traceback.print_exc()
+        raise typer.Exit(code=1)
+
+
+@app.command(name="eval")
+def evaluate_synthetic_data(
+    dseed_dir: Path = typer.Option(
+        ...,
+        "-d",
+        "--dseed-dir",
+        help="Path to dseed directory with hyperparams.json",
+        exists=True,
+        file_okay=False,
+        dir_okay=True,
+        readable=True,
+    ),
+    synthetic_file: Path = typer.Option(
+        ...,
+        "-s",
+        "--synthetic-file",
+        help="Path to synthetic training CSV file",
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+        readable=True,
+    ),
+    target_column: str = typer.Option(
+        "READMIT",
+        "-c",
+        "--target-column",
+        help="Name of the target column",
+    ),
+    n_estimators: int = typer.Option(
+        500,
+        "--n-estimators",
+        min=100,
+        help="Number of trees for leaf alignment (more = tighter confidence intervals)",
+    ),
+    n_jobs: int = typer.Option(
+        1,
+        "-j",
+        "--n-jobs",
+        help="Number of parallel jobs (1=sequential, -1=all CPUs)",
+    ),
+    seed: int = typer.Option(
+        42,
+        "--seed",
+        help="Random seed for reproducibility",
+    ),
+    output: Optional[Path] = typer.Option(
+        None,
+        "-o",
+        "--output",
+        help="Custom output path for CSV results (default: dseed_dir/synthetic_evaluation.csv)",
+    ),
+) -> None:
+    """
+    Evaluate synthetic data quality using leaf alignment.
+
+    This command evaluates synthetic training data by:
+    1. Loading hyperparameters tuned on real training data (from 'tune' command)
+    2. Training a model on the synthetic data using those hyperparameters
+    3. Measuring leaf co-occurrence with real test data
+    4. Identifying beneficial, harmful, and hallucinated synthetic points
+
+    The evaluation produces two outputs:
+    - CSV file with per-point utilities and classifications
+    - JSON summary with aggregate statistics
+
+    Requirements:
+    - hyperparams.json must exist in dseed directory (run 'tune' first)
+    - Real test data must be available in dseed directory
+
+    Interpretation:
+    - Beneficial points: Synthetic samples that improve model performance
+    - Harmful points: Synthetic samples that hurt model performance
+    - Hallucinated points: Synthetic samples with no alignment to real test data
+
+    Example usage:
+
+        # After running tune command
+        $ sdvaluation tune --dseed-dir dseed55/
+
+        # Evaluate synthetic data
+        $ sdvaluation eval \\
+            --dseed-dir dseed55/ \\
+            --synthetic-file synth_10k.csv
+
+        # With more trees for tighter confidence intervals
+        $ sdvaluation eval \\
+            --dseed-dir dseed55/ \\
+            --synthetic-file synth_10k.csv \\
+            --n-estimators 1000 \\
+            --n-jobs -1
+    """
+    try:
+        from .tuner import evaluate_synthetic
+
+        console.print("\n" + "=" * 60)
+        console.print("[bold cyan]Synthetic Data Evaluation - sdvaluation[/bold cyan]")
+        console.print("=" * 60)
+
+        evaluate_synthetic(
+            dseed_dir=dseed_dir,
+            synthetic_file=synthetic_file,
+            target_column=target_column,
+            n_estimators=n_estimators,
+            n_jobs=n_jobs,
+            seed=seed,
+            output_file=output,
+        )
+
+        console.print("\n" + "=" * 60)
+        console.print("[bold green]✓ Synthetic evaluation completed successfully![/bold green]\n")
+
+    except Exception as e:
+        console.print(f"\n[bold red]Error during synthetic evaluation:[/bold red] {e}\n")
         import traceback
         traceback.print_exc()
         raise typer.Exit(code=1)
