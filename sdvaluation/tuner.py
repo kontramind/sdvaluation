@@ -1049,26 +1049,88 @@ def evaluate_synthetic(
     console.print(f"  ✓ Loaded hyperparameters")
     console.print(f"  Optimal threshold: {optimal_threshold:.3f}")
 
-    # Load and encode data
+    # Load and encode data (match dual-eval approach: fit on real training, transform others)
     console.print(f"\n[bold]Loading and encoding data...[/bold]")
 
-    console.print("[cyan]Loading synthetic training data...[/cyan]")
-    X_synthetic, y_synthetic = load_and_encode_data(
-        synthetic_file,
-        discovery.get_file("encoding"),
-        target_column,
-    )
+    # Step 1: Load real training data and fit encoder
+    console.print("[cyan]Loading real training data (to fit encoder)...[/cyan]")
+    from .encoding import RDTDatasetEncoder, load_encoding_config
+
+    train_data = pd.read_csv(discovery.get_file("training"))
+    X_train_raw = train_data.drop(columns=[target_column])
+    y_train = train_data[target_column]
+
+    # Create and fit encoder on real training data
+    config = load_encoding_config(discovery.get_file("encoding"))
+    feature_columns = set(X_train_raw.columns)
+    filtered_config = {
+        "sdtypes": {col: dtype for col, dtype in config["sdtypes"].items() if col in feature_columns},
+        "transformers": {col: transformer for col, transformer in config["transformers"].items() if col in feature_columns},
+    }
+    encoder = RDTDatasetEncoder(filtered_config)
+    encoder.fit(X_train_raw)
+    X_train = encoder.transform(X_train_raw).reset_index(drop=True)
+    y_train = y_train.reset_index(drop=True)
+    console.print(f"  Samples: {len(X_train):,}")
+    console.print(f"  Class balance: {np.mean(y_train == 1):.1%} positive")
+
+    # Step 2: Load synthetic data and transform with same encoder
+    console.print("[cyan]Loading synthetic training data (using fitted encoder)...[/cyan]")
+    synth_data = pd.read_csv(synthetic_file)
+    X_synthetic_raw = synth_data.drop(columns=[target_column])
+    y_synthetic = synth_data[target_column]
+    X_synthetic = encoder.transform(X_synthetic_raw).reset_index(drop=True)
+    y_synthetic = y_synthetic.reset_index(drop=True)
     console.print(f"  Samples: {len(X_synthetic):,}")
     console.print(f"  Class balance: {np.mean(y_synthetic == 1):.1%} positive")
 
-    console.print("[cyan]Loading real test data...[/cyan]")
-    X_test, y_test = load_and_encode_data(
-        discovery.get_file("test"),
-        discovery.get_file("encoding"),
-        target_column,
-    )
+    # Step 3: Load real test data and transform with same encoder
+    console.print("[cyan]Loading real test data (using fitted encoder)...[/cyan]")
+    test_data = pd.read_csv(discovery.get_file("test"))
+    X_test_raw = test_data.drop(columns=[target_column])
+    y_test = test_data[target_column]
+    X_test = encoder.transform(X_test_raw).reset_index(drop=True)
+    y_test = y_test.reset_index(drop=True)
     console.print(f"  Samples: {len(X_test):,}")
     console.print(f"  Class balance: {np.mean(y_test == 1):.1%} positive")
+
+    # Evaluate model performance (like dual-eval)
+    console.print(f"\n[bold magenta]{'═' * 70}[/bold magenta]")
+    console.print(f"[bold magenta]{'Model Performance Evaluation':^70}[/bold magenta]")
+    console.print(f"[bold magenta]{'═' * 70}[/bold magenta]\n")
+
+    # Baseline: Real training → Real test
+    console.print("[bold]Baseline: Real Training → Real Test[/bold]")
+    real_metrics = evaluate_on_test(
+        params=lgbm_params,
+        X_train=X_train,
+        y_train=y_train,
+        X_test=X_test,
+        y_test=y_test,
+        threshold=optimal_threshold,
+        seed=seed,
+    )
+    display_test_evaluation("Real → Test", 0.0, real_metrics)
+
+    # Synthetic: Synthetic training → Real test
+    console.print("\n[bold]Synthetic: Synthetic Training → Real Test[/bold]")
+    synth_metrics = evaluate_on_test(
+        params=lgbm_params,
+        X_train=X_synthetic,
+        y_train=y_synthetic,
+        X_test=X_test,
+        y_test=y_test,
+        threshold=optimal_threshold,
+        seed=seed,
+    )
+    display_test_evaluation("Synthetic → Test", 0.0, synth_metrics)
+
+    # Display comparison
+    console.print(f"\n[bold cyan]Performance Gap (Real - Synthetic)[/bold cyan]")
+    console.print(f"  AUROC Gap:     {real_metrics['auroc'] - synth_metrics['auroc']:+.4f}")
+    console.print(f"  F1 Gap:        {real_metrics['f1'] - synth_metrics['f1']:+.4f}")
+    console.print(f"  Precision Gap: {real_metrics['precision'] - synth_metrics['precision']:+.4f}")
+    console.print(f"  Recall Gap:    {real_metrics['recall'] - synth_metrics['recall']:+.4f}")
 
     # Set output file path
     if output_file is None:
@@ -1077,7 +1139,9 @@ def evaluate_synthetic(
         output_file = Path(output_file)
 
     # Run leaf alignment
-    console.print(f"\n[bold green]Running leaf alignment analysis[/bold green]")
+    console.print(f"\n[bold green]{'═' * 70}[/bold green]")
+    console.print(f"[bold green]{'Leaf Alignment Analysis':^70}[/bold green]")
+    console.print(f"[bold green]{'═' * 70}[/bold green]\n")
     console.print(f"  Training on: Synthetic data ({len(X_synthetic):,} samples)")
     console.print(f"  Testing on: Real test data ({len(X_test):,} samples)")
     console.print(f"  Using: Hyperparameters tuned on real training data")
@@ -1151,7 +1215,17 @@ def evaluate_synthetic(
             "target_column": target_column,
             "seed": seed,
         },
-        "results": leaf_results,
+        "model_performance": {
+            "real_to_test": real_metrics,
+            "synthetic_to_test": synth_metrics,
+            "performance_gap": {
+                "auroc": float(real_metrics['auroc'] - synth_metrics['auroc']),
+                "f1": float(real_metrics['f1'] - synth_metrics['f1']),
+                "precision": float(real_metrics['precision'] - synth_metrics['precision']),
+                "recall": float(real_metrics['recall'] - synth_metrics['recall']),
+            },
+        },
+        "leaf_alignment": leaf_results,
     }
 
     with open(summary_path, "w") as f:
