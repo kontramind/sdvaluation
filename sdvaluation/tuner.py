@@ -177,6 +177,7 @@ class LGBMTuner:
         n_trials: int = 100,
         n_jobs: int = -1,
         random_state: int = 42,
+        optimize_metric: str = "auroc",
     ):
         """
         Initialize the tuner.
@@ -188,6 +189,7 @@ class LGBMTuner:
             n_trials: Number of Bayesian optimization trials
             n_jobs: Number of parallel jobs for LGBM (1=sequential, -1=all CPUs)
             random_state: Random seed for reproducibility
+            optimize_metric: Metric to optimize ('auroc', 'pr_auc', 'f1', 'precision', 'recall')
         """
         self.X_train = X_train
         self.y_train = y_train
@@ -195,8 +197,14 @@ class LGBMTuner:
         self.n_trials = n_trials
         self.n_jobs = n_jobs
         self.random_state = random_state
+        self.optimize_metric = optimize_metric.lower()
         self.best_params = None
         self.best_score = None
+
+        # Validate optimize_metric
+        valid_metrics = ['auroc', 'pr_auc', 'f1', 'precision', 'recall']
+        if self.optimize_metric not in valid_metrics:
+            raise ValueError(f"optimize_metric must be one of {valid_metrics}, got '{optimize_metric}'")
         self.study = None
 
     def _objective(self, trial: optuna.Trial) -> float:
@@ -213,15 +221,20 @@ class LGBMTuner:
         n_samples = len(self.X_train)
 
         if n_samples < 15000:
-            # Constrained ranges for small datasets (< 15k samples)
+            # MIMIC-III optimized ranges for small datasets (< 15k samples)
+            # Based on medical data best practices: stable, less prone to overfitting
             max_leaves_upper = 50
-            max_depth_upper = 8
+            max_depth_upper = 7  # Was 8, tightened for clinical data
             min_reg_lambda = 0.5  # Force regularization
+            learning_rate_range = (0.01, 0.05)  # Narrow, stable range for noisy medical data
+            min_data_in_leaf_range = (50, 200)  # Higher minimum for meaningful patient cohorts
         else:
             # Wider ranges for large datasets (>= 15k samples)
             max_leaves_upper = 100
             max_depth_upper = 12
             min_reg_lambda = 0.1
+            learning_rate_range = (0.001, 0.1)  # Wider for large datasets
+            min_data_in_leaf_range = (20, 100)  # Can afford smaller leaves
 
         # Core hyperparameters
         params = {
@@ -231,7 +244,7 @@ class LGBMTuner:
             "boosting_type": trial.suggest_categorical("boosting_type", ["gbdt", "goss"]),
             "num_leaves": trial.suggest_int("num_leaves", 10, max_leaves_upper),  # Min 10, adaptive max
             "max_depth": trial.suggest_int("max_depth", 3, max_depth_upper),  # Min 3, adaptive max
-            "learning_rate": trial.suggest_float("learning_rate", 2**(-10), 2**0, log=True),
+            "learning_rate": trial.suggest_float("learning_rate", learning_rate_range[0], learning_rate_range[1]),
             "min_child_samples": trial.suggest_int("min_child_samples", 5, 60),  # Min 5
             "n_estimators": 1000,  # Large number, will use early stopping
             "random_state": self.random_state,
@@ -248,7 +261,7 @@ class LGBMTuner:
         params["colsample_bytree"] = trial.suggest_float("colsample_bytree", 0.6, 1.0)
 
         # Leaf constraints
-        params["min_data_in_leaf"] = trial.suggest_int("min_data_in_leaf", 10, 50)
+        params["min_data_in_leaf"] = trial.suggest_int("min_data_in_leaf", min_data_in_leaf_range[0], min_data_in_leaf_range[1])
 
         # Class imbalance handling
         imbalance_method = trial.suggest_categorical(
@@ -292,11 +305,53 @@ class LGBMTuner:
             )
 
             # Predict on validation set
-            y_pred = model.predict(X_val, num_iteration=model.best_iteration)
+            y_pred_proba = model.predict(X_val, num_iteration=model.best_iteration)
 
-            # Calculate AUROC
-            auroc = roc_auc_score(y_val, y_pred)
-            cv_scores.append(auroc)
+            # Calculate metric based on optimize_metric
+            if self.optimize_metric == 'auroc':
+                score = roc_auc_score(y_val, y_pred_proba)
+            elif self.optimize_metric == 'pr_auc':
+                from sklearn.metrics import average_precision_score
+                score = average_precision_score(y_val, y_pred_proba)
+            elif self.optimize_metric in ['f1', 'precision', 'recall']:
+                from sklearn.metrics import precision_recall_curve, f1_score, precision_score, recall_score
+                # Find optimal threshold on this fold
+                precisions, recalls, thresholds = precision_recall_curve(y_val, y_pred_proba)
+
+                if self.optimize_metric == 'f1':
+                    # Compute F1 for each threshold
+                    f1_scores = 2 * (precisions * recalls) / (precisions + recalls + 1e-10)
+                    best_idx = np.argmax(f1_scores)
+                    best_threshold = thresholds[best_idx] if best_idx < len(thresholds) else 0.5
+                elif self.optimize_metric == 'precision':
+                    # Use threshold that maximizes precision while maintaining reasonable recall
+                    valid_indices = recalls >= 0.3  # Maintain at least 30% recall
+                    if np.any(valid_indices):
+                        best_idx = np.argmax(precisions[valid_indices])
+                        best_threshold = thresholds[valid_indices][best_idx] if best_idx < len(thresholds[valid_indices]) else 0.5
+                    else:
+                        best_threshold = 0.5
+                else:  # recall
+                    # Use threshold that maximizes recall while maintaining reasonable precision
+                    valid_indices = precisions >= 0.2  # Maintain at least 20% precision
+                    if np.any(valid_indices):
+                        best_idx = np.argmax(recalls[valid_indices])
+                        best_threshold = thresholds[valid_indices][best_idx] if best_idx < len(thresholds[valid_indices]) else 0.5
+                    else:
+                        best_threshold = 0.5
+
+                # Make predictions with optimal threshold
+                y_pred = (y_pred_proba >= best_threshold).astype(int)
+
+                # Calculate the metric
+                if self.optimize_metric == 'f1':
+                    score = f1_score(y_val, y_pred, zero_division=0)
+                elif self.optimize_metric == 'precision':
+                    score = precision_score(y_val, y_pred, zero_division=0)
+                else:  # recall
+                    score = recall_score(y_val, y_pred, zero_division=0)
+
+            cv_scores.append(score)
 
         return np.mean(cv_scores)
 
@@ -449,6 +504,7 @@ def optimize_hyperparameters(
     n_folds: int = 5,
     n_jobs: int = -1,
     seed: int = 42,
+    optimize_metric: str = "auroc",
 ) -> Dict[str, Any]:
     """
     Optimize LightGBM hyperparameters using enhanced tuner.
@@ -460,6 +516,7 @@ def optimize_hyperparameters(
         n_folds: Number of CV folds
         n_jobs: Number of parallel jobs
         seed: Random seed
+        optimize_metric: Metric to optimize ('auroc', 'pr_auc', 'f1', 'precision', 'recall')
 
     Returns:
         Dictionary with best_params and best_cv_score
@@ -476,11 +533,22 @@ def optimize_hyperparameters(
         n_trials=n_trials,
         n_jobs=n_jobs,
         random_state=seed,
+        optimize_metric=optimize_metric,
     )
 
     results = tuner.tune(show_progress=True)
 
-    console.print(f"[green]✓ Best CV ROC-AUC: {results['best_cv_score']:.4f}[/green]")
+    # Display metric name based on optimize_metric
+    metric_names = {
+        'auroc': 'ROC-AUC',
+        'pr_auc': 'PR-AUC',
+        'f1': 'F1',
+        'precision': 'Precision',
+        'recall': 'Recall'
+    }
+    metric_display = metric_names.get(optimize_metric, optimize_metric.upper())
+
+    console.print(f"[green]✓ Best CV {metric_display}: {results['best_cv_score']:.4f}[/green]")
 
     return results
 
@@ -834,6 +902,7 @@ def tune_dual_scenario(
     n_jobs: int = -1,
     seed: int = 42,
     output_name: str = "hyperparams.json",
+    optimize_metric: str = "auroc",
 ) -> Dict[str, Any]:
     """
     Tune hyperparameters on training data and evaluate on test data.
@@ -852,6 +921,7 @@ def tune_dual_scenario(
         n_jobs: Number of parallel jobs
         seed: Random seed
         output_name: Name of output JSON file
+        optimize_metric: Metric to optimize during hyperparameter search ('auroc', 'pr_auc', 'f1', 'precision', 'recall')
 
     Returns:
         Dictionary with tuning results
@@ -900,6 +970,7 @@ def tune_dual_scenario(
         n_folds=n_folds,
         n_jobs=n_jobs,
         seed=seed,
+        optimize_metric=optimize_metric,
     )
 
     # Optimize threshold
