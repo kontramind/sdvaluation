@@ -27,6 +27,7 @@ import pandas as pd
 from lightgbm import LGBMClassifier
 from rich.console import Console
 from sklearn.metrics import (
+    accuracy_score,
     confusion_matrix,
     f1_score,
     log_loss,
@@ -709,6 +710,7 @@ def evaluate_on_test(
 
     metrics = {
         "auroc": float(roc_auc_score(y_test, y_pred_proba)),
+        "accuracy": float(accuracy_score(y_test, y_pred)),
         "logloss": float(log_loss(y_test, y_pred_proba_clipped)),
         "f1": float(f1_score(y_test, y_pred, zero_division=0)),
         "precision": float(precision_score(y_test, y_pred, zero_division=0)),
@@ -772,6 +774,7 @@ def display_test_evaluation(
         f"    AUROC:     {test_metrics['auroc']:.4f} "
         f"(CV: {cv_score:.4f}, gap: [{gap_color}]{auroc_gap:+.4f}[/{gap_color}])"
     )
+    console.print(f"    Accuracy:  {test_metrics['accuracy']:.4f}")
     console.print(f"    Log Loss:  {test_metrics['logloss']:.4f}")
     console.print(f"    F1 Score:  {test_metrics['f1']:.4f}")
     console.print(f"    Precision: {test_metrics['precision']:.4f}")
