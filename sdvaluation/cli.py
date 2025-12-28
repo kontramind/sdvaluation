@@ -6,6 +6,7 @@ on synthetic data, specifically designed for MIMIC-III readmission datasets.
 """
 
 import json
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -306,6 +307,8 @@ def tune_hyperparameters(
     console.print("\n[bold cyan]LightGBM Hyperparameter Tuning[/bold cyan]")
     console.print("[cyan]Dual Scenario: Deployment + Optimal[/cyan]\n")
 
+    start_time = time.time()
+
     try:
         # Validate threshold metric
         valid_threshold_metrics = ["f1", "recall", "precision", "youden"]
@@ -344,6 +347,10 @@ def tune_hyperparameters(
         console.print(f"  Test ROC-AUC:      {results['hyperparams']['test_evaluation']['auroc']:.4f}")
         console.print(f"  CV→Test Gap:       {results['hyperparams']['test_evaluation']['auroc'] - results['hyperparams']['best_cv_score']:+.4f}")
         console.print(f"  Optimal Threshold: {results['hyperparams']['optimal_threshold']:.3f}")
+
+        # Display execution time
+        elapsed_time = time.time() - start_time
+        console.print(f"\n[bold]Execution time:[/bold] {elapsed_time:.1f}s ({elapsed_time/60:.1f}m)")
 
         console.print(f"\n[bold green]✓ Hyperparameter tuning completed successfully![/bold green]\n")
 
@@ -764,6 +771,8 @@ def evaluate_synthetic_data(
         console.print("[bold cyan]Synthetic Data Evaluation - sdvaluation[/bold cyan]")
         console.print("=" * 60)
 
+        start_time = time.time()
+
         evaluate_synthetic(
             dseed_dir=dseed_dir,
             synthetic_file=synthetic_file,
@@ -773,6 +782,10 @@ def evaluate_synthetic_data(
             seed=seed,
             output_file=output,
         )
+
+        # Display execution time
+        elapsed_time = time.time() - start_time
+        console.print(f"\n[bold]Execution time:[/bold] {elapsed_time:.1f}s ({elapsed_time/60:.1f}m)")
 
         console.print("\n" + "=" * 60)
         console.print("[bold green]✓ Synthetic evaluation completed successfully![/bold green]\n")
