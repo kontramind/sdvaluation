@@ -248,9 +248,14 @@ def tune_hyperparameters(
         "--output-name",
         help="Output filename for hyperparameters",
     ),
+    optimize_metric: str = typer.Option(
+        "auroc",
+        "--optimize-metric",
+        help="Metric to optimize during hyperparameter search: auroc, pr_auc, f1, precision, recall",
+    ),
 ) -> None:
     """
-    Tune LightGBM hyperparameters for both deployment and optimal scenarios.
+    Tune LightGBM hyperparameters on training data.
 
     This command performs dual-scenario hyperparameter tuning:
 
@@ -303,11 +308,20 @@ def tune_hyperparameters(
 
     try:
         # Validate threshold metric
-        valid_metrics = ["f1", "recall", "precision", "youden"]
-        if threshold_metric not in valid_metrics:
+        valid_threshold_metrics = ["f1", "recall", "precision", "youden"]
+        if threshold_metric not in valid_threshold_metrics:
             console.print(
                 f"[bold red]Error:[/bold red] Invalid threshold metric '{threshold_metric}'. "
-                f"Must be one of: {', '.join(valid_metrics)}"
+                f"Must be one of: {', '.join(valid_threshold_metrics)}"
+            )
+            raise typer.Exit(code=1)
+
+        # Validate optimize metric
+        valid_optimize_metrics = ["auroc", "pr_auc", "f1", "precision", "recall"]
+        if optimize_metric not in valid_optimize_metrics:
+            console.print(
+                f"[bold red]Error:[/bold red] Invalid optimize metric '{optimize_metric}'. "
+                f"Must be one of: {', '.join(valid_optimize_metrics)}"
             )
             raise typer.Exit(code=1)
 
@@ -321,6 +335,7 @@ def tune_hyperparameters(
             n_jobs=n_jobs,
             seed=seed,
             output_name=output_name,
+            optimize_metric=optimize_metric,
         )
 
         # Display summary
