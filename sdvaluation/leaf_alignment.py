@@ -306,12 +306,40 @@ def run_leaf_alignment(
     # Handle class imbalance
     n_pos = np.sum(y_synthetic == 1)
     n_neg = np.sum(y_synthetic == 0)
+
+    # Warn if synthetic data has missing or severely imbalanced classes
+    if n_pos == 0:
+        console.print(
+            "[bold red]WARNING:[/bold red] Synthetic data has 0% positive class! "
+            "This will produce unreliable leaf alignment results."
+        )
+    elif n_neg == 0:
+        console.print(
+            "[bold red]WARNING:[/bold red] Synthetic data has 0% negative class! "
+            "This will produce unreliable leaf alignment results."
+        )
+    elif n_pos < len(y_synthetic) * 0.005:  # Less than 0.5%
+        pct_pos = 100 * n_pos / len(y_synthetic)
+        console.print(
+            f"[bold yellow]WARNING:[/bold yellow] Synthetic data has only {pct_pos:.2f}% positive class "
+            f"({n_pos}/{len(y_synthetic)} samples). Results may be unreliable."
+        )
+
     params['scale_pos_weight'] = n_neg / n_pos if n_pos > 0 else 1.0
 
     # Train model
     console.print(f"  Training LGBM with {n_estimators} trees...")
     model = LGBMClassifier(**params)
     model.fit(X_synthetic, y_synthetic)
+
+    # Check if model built fewer trees than requested (indicates early stopping or single-class data)
+    actual_n_estimators = model.n_estimators_
+    if actual_n_estimators < n_estimators * 0.1:  # Less than 10% of requested trees
+        console.print(
+            f"  [bold yellow]WARNING:[/bold yellow] Model only built {actual_n_estimators:,} trees "
+            f"(requested {n_estimators:,}). This usually indicates single-class data or early stopping."
+        )
+
     console.print("  [green]✓ Model trained[/green]")
 
     # Compute utility scores
