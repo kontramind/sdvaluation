@@ -1255,9 +1255,9 @@ def evaluate_synthetic(
             random_state=seed,
         )
 
-        synth_lgbm_params = synth_tuning_results["lgbm_params"]
-        synth_optimal_threshold = synth_tuning_results["optimal_threshold"]
-        synth_best_cv_score = synth_tuning_results["best_cv_score"]
+        synth_lgbm_params = synth_tuning_results["best_params"]
+        synth_optimal_threshold = synth_tuning_results["threshold"]
+        synth_best_cv_score = synth_tuning_results["cv_score"]
 
         console.print(f"  ✓ Synthetic tuning complete")
         console.print(f"  CV ROC-AUC: {synth_best_cv_score:.4f}")
