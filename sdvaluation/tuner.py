@@ -1292,7 +1292,7 @@ def evaluate_synthetic(
     else:
         output_file = Path(output_file)
 
-    # Run leaf alignment
+    # Run leaf alignment (DUAL: Unadjusted + Adjusted)
     console.print(f"\n[bold green]{'═' * 70}[/bold green]")
     console.print(f"[bold green]{'Leaf Alignment Analysis':^70}[/bold green]")
     console.print(f"[bold green]{'═' * 70}[/bold green]\n")
@@ -1300,60 +1300,121 @@ def evaluate_synthetic(
     console.print(f"  Testing on: Real test data ({len(X_test):,} samples)")
     console.print(f"  Using: Hyperparameters tuned on real training data")
 
-    leaf_results = run_leaf_alignment(
+    # 1. Unadjusted leaf alignment (drop-in replacement test)
+    console.print(f"\n[yellow]  Running unadjusted analysis (using real data's hyperparameters)...[/yellow]")
+    leaf_results_unadjusted = run_leaf_alignment(
         X_synthetic=X_synthetic,
         y_synthetic=y_synthetic,
         X_real_test=X_test,
         y_real_test=y_test,
         lgbm_params=lgbm_params,
-        output_file=output_file,
+        output_file=output_file.parent / f"{output_file.stem}_unadjusted.csv",
         n_estimators=n_estimators,
         n_jobs=n_jobs,
         random_state=seed,
     )
 
-    # Display summary
+    # 2. Adjusted leaf alignment (pattern quality test)
+    console.print(f"\n[green]  Running adjusted analysis (recalculating scale_pos_weight)...[/green]")
+    console.print(f"[dim]    scale_pos_weight: {real_scale_pos_weight} → {synth_scale_pos_weight:.2f}[/dim]")
+    leaf_results_adjusted = run_leaf_alignment(
+        X_synthetic=X_synthetic,
+        y_synthetic=y_synthetic,
+        X_real_test=X_test,
+        y_real_test=y_test,
+        lgbm_params=synth_params_adjusted,  # Use adjusted params
+        output_file=output_file.parent / f"{output_file.stem}_adjusted.csv",
+        n_estimators=n_estimators,
+        n_jobs=n_jobs,
+        random_state=seed,
+    )
+
+    # Display dual summary
     console.print(f"\n[bold cyan]{'═' * 70}[/bold cyan]")
     console.print(f"[bold cyan]{'Synthetic Data Evaluation Summary':^70}[/bold cyan]")
     console.print(f"[bold cyan]{'═' * 70}[/bold cyan]\n")
 
     from rich.table import Table
 
-    table = Table(show_header=True, header_style="bold magenta")
-    table.add_column("Metric", style="cyan", width=30)
-    table.add_column("Value", justify="right", width=20)
-    table.add_column("Percentage", justify="right", width=15)
+    # Unadjusted results table
+    console.print("[yellow]Unadjusted Results (Drop-in Replacement)[/yellow]")
+    table_unadj = Table(show_header=True, header_style="bold magenta")
+    table_unadj.add_column("Metric", style="cyan", width=30)
+    table_unadj.add_column("Value", justify="right", width=20)
+    table_unadj.add_column("Percentage", justify="right", width=15)
 
-    total_points = leaf_results["n_total"]
-    table.add_row("Total synthetic points", f"{total_points:,}", "100.0%")
-    table.add_row(
+    total_points = leaf_results_unadjusted["n_total"]
+    table_unadj.add_row("Total synthetic points", f"{total_points:,}", "100.0%")
+    table_unadj.add_row(
         "[green]Beneficial points[/green]",
-        f"{leaf_results['n_beneficial']:,}",
-        f"{leaf_results['pct_beneficial']:.1f}%",
+        f"{leaf_results_unadjusted['n_beneficial']:,}",
+        f"{leaf_results_unadjusted['pct_beneficial']:.1f}%",
     )
-    table.add_row(
+    table_unadj.add_row(
         "[yellow]Hallucinated points[/yellow]",
-        f"{leaf_results['n_hallucinated']:,}",
-        f"{leaf_results['pct_hallucinated']:.1f}%",
+        f"{leaf_results_unadjusted['n_hallucinated']:,}",
+        f"{leaf_results_unadjusted['pct_hallucinated']:.1f}%",
     )
-    table.add_row(
+    table_unadj.add_row(
         "[cyan]Uncertain points[/cyan]",
-        f"{leaf_results['n_uncertain']:,}",
-        f"{leaf_results['pct_uncertain']:.1f}%",
+        f"{leaf_results_unadjusted['n_uncertain']:,}",
+        f"{leaf_results_unadjusted['pct_uncertain']:.1f}%",
     )
-    table.add_row("", "", "")
-    table.add_row(
+    table_unadj.add_row("", "", "")
+    table_unadj.add_row(
         "Mean utility",
-        f"{leaf_results['mean_utility']:.4f}",
+        f"{leaf_results_unadjusted['mean_utility']:.4f}",
         "",
     )
-    table.add_row(
+    table_unadj.add_row(
         "Median utility",
-        f"{leaf_results['median_utility']:.4f}",
+        f"{leaf_results_unadjusted['median_utility']:.4f}",
         "",
     )
+    console.print(table_unadj)
 
-    console.print(table)
+    # Adjusted results table
+    console.print(f"\n[green]Adjusted Results (Pattern Quality)[/green]")
+    table_adj = Table(show_header=True, header_style="bold magenta")
+    table_adj.add_column("Metric", style="cyan", width=30)
+    table_adj.add_column("Value", justify="right", width=20)
+    table_adj.add_column("Percentage", justify="right", width=15)
+
+    table_adj.add_row("Total synthetic points", f"{total_points:,}", "100.0%")
+    table_adj.add_row(
+        "[green]Beneficial points[/green]",
+        f"{leaf_results_adjusted['n_beneficial']:,}",
+        f"{leaf_results_adjusted['pct_beneficial']:.1f}%",
+    )
+    table_adj.add_row(
+        "[yellow]Hallucinated points[/yellow]",
+        f"{leaf_results_adjusted['n_hallucinated']:,}",
+        f"{leaf_results_adjusted['pct_hallucinated']:.1f}%",
+    )
+    table_adj.add_row(
+        "[cyan]Uncertain points[/cyan]",
+        f"{leaf_results_adjusted['n_uncertain']:,}",
+        f"{leaf_results_adjusted['pct_uncertain']:.1f}%",
+    )
+    table_adj.add_row("", "", "")
+    table_adj.add_row(
+        "Mean utility",
+        f"{leaf_results_adjusted['mean_utility']:.4f}",
+        "",
+    )
+    table_adj.add_row(
+        "Median utility",
+        f"{leaf_results_adjusted['median_utility']:.4f}",
+        "",
+    )
+    console.print(table_adj)
+
+    # Comparison
+    console.print(f"\n[cyan]Impact of Class Imbalance Adjustment:[/cyan]")
+    ben_diff = leaf_results_adjusted['pct_beneficial'] - leaf_results_unadjusted['pct_beneficial']
+    hal_diff = leaf_results_adjusted['pct_hallucinated'] - leaf_results_unadjusted['pct_hallucinated']
+    console.print(f"  Beneficial:    {ben_diff:+.1f}pp (adjusted {'gained' if ben_diff > 0 else 'lost'} {abs(ben_diff):.1f}pp)")
+    console.print(f"  Hallucinated:  {hal_diff:+.1f}pp (adjusted {'gained' if hal_diff > 0 else 'lost'} {abs(hal_diff):.1f}pp)")
 
     # Save JSON summary
     summary_path = output_file.parent / f"{output_file.stem}_summary.json"
@@ -1371,22 +1432,31 @@ def evaluate_synthetic(
         },
         "model_performance": {
             "real_to_test": real_metrics,
-            "synthetic_to_test": synth_metrics,
-            "performance_gap": {
-                "auroc": float(real_metrics['auroc'] - synth_metrics['auroc']),
-                "f1": float(real_metrics['f1'] - synth_metrics['f1']),
-                "precision": float(real_metrics['precision'] - synth_metrics['precision']),
-                "recall": float(real_metrics['recall'] - synth_metrics['recall']),
+            "synthetic_to_test_unadjusted": synth_metrics_unadjusted,
+            "synthetic_to_test_adjusted": synth_metrics_adjusted,
+            "performance_gap_unadjusted": {
+                "auroc": float(real_metrics['auroc'] - synth_metrics_unadjusted['auroc']),
+                "f1": float(real_metrics['f1'] - synth_metrics_unadjusted['f1']),
+                "precision": float(real_metrics['precision'] - synth_metrics_unadjusted['precision']),
+                "recall": float(real_metrics['recall'] - synth_metrics_unadjusted['recall']),
+            },
+            "performance_gap_adjusted": {
+                "auroc": float(real_metrics['auroc'] - synth_metrics_adjusted['auroc']),
+                "f1": float(real_metrics['f1'] - synth_metrics_adjusted['f1']),
+                "precision": float(real_metrics['precision'] - synth_metrics_adjusted['precision']),
+                "recall": float(real_metrics['recall'] - synth_metrics_adjusted['recall']),
             },
         },
-        "leaf_alignment": leaf_results,
+        "leaf_alignment_unadjusted": leaf_results_unadjusted,
+        "leaf_alignment_adjusted": leaf_results_adjusted,
     }
 
     with open(summary_path, "w") as f:
         json.dump(summary_output, f, indent=2)
 
     console.print(f"\n[bold green]✓ Evaluation complete![/bold green]")
-    console.print(f"[green]Per-point utilities saved to: {output_file}[/green]")
+    console.print(f"[green]Per-point utilities (unadjusted) saved to: {output_file.parent / f'{output_file.stem}_unadjusted.csv'}[/green]")
+    console.print(f"[green]Per-point utilities (adjusted) saved to: {output_file.parent / f'{output_file.stem}_adjusted.csv'}[/green]")
     console.print(f"[green]Summary statistics saved to: {summary_path}[/green]")
 
     return summary_output
