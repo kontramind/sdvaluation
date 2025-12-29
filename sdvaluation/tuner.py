@@ -257,10 +257,6 @@ class LGBMTuner:
         params["reg_alpha"] = trial.suggest_float("reg_alpha", 0.0, 5.0)  # L1
         params["reg_lambda"] = trial.suggest_float("reg_lambda", min_reg_lambda, 10.0)  # L2 with minimum
 
-        # Complexity penalties (Option 2: prevent overfitting through split quality and smoothing)
-        params["min_gain_to_split"] = trial.suggest_float("min_gain_to_split", 0.0, 1.0)  # Minimum gain required to split
-        params["path_smooth"] = trial.suggest_float("path_smooth", 0.0, 5.0)  # Smoothing for leaf values
-
         # Feature and sample sampling
         params["feature_fraction"] = trial.suggest_float("feature_fraction", 0.5, 1.0)
         params["subsample"] = trial.suggest_float("subsample", 0.6, 1.0)
@@ -299,14 +295,14 @@ class LGBMTuner:
             train_data = lgb.Dataset(X_tr, label=y_tr)
             val_data = lgb.Dataset(X_val, label=y_val, reference=train_data)
 
-            # Train model with early stopping
+            # Train model with early stopping (suppress all output)
             model = lgb.train(
                 params,
                 train_data,
                 valid_sets=[val_data],
                 callbacks=[
                     lgb.early_stopping(stopping_rounds=early_stopping_rounds),
-                    lgb.log_evaluation(period=0),  # Suppress output
+                    lgb.log_evaluation(-1),  # Fully suppress all training output
                 ],
             )
 
