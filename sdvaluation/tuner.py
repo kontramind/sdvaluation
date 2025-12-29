@@ -1055,9 +1055,16 @@ def evaluate_synthetic(
     n_jobs: int = 1,
     seed: int = 42,
     output_file: Optional[Path] = None,
+    adjust_for_imbalance: bool = False,
+    retune_on_synthetic: bool = False,
 ) -> Dict[str, Any]:
     """
     Evaluate synthetic data quality using leaf alignment.
+
+    Three evaluation levels:
+    - Level 1 (default): Unadjusted drop-in replacement test
+    - Level 2 (adjust_for_imbalance=True): Dual comparison (unadjusted + adjusted)
+    - Level 3 (retune_on_synthetic=True): Full hyperparameter tuning on synthetic
 
     Workflow:
     1. Load hyperparameters from hyperparams.json (tuned on real training)
@@ -1218,248 +1225,643 @@ def evaluate_synthetic(
     )
     display_test_evaluation("Real → Test", best_cv_score, real_metrics)
 
-    # Synthetic: Synthetic training → Real test (DUAL EVALUATION)
-    console.print("\n[bold]Synthetic: Synthetic Training → Real Test[/bold]")
-
-    # 1. Unadjusted evaluation (drop-in replacement test)
-    console.print("[dim]  Unadjusted (using real data's hyperparameters as-is)...[/dim]")
-    synth_metrics_unadjusted = evaluate_on_test(
-        params=lgbm_params,
-        X_train=X_synthetic,
-        y_train=y_synthetic,
-        X_test=X_test,
-        y_test=y_test,
-        threshold=optimal_threshold,
-        seed=seed,
-    )
-
-    # 2. Adjusted evaluation (pattern quality test)
-    console.print("[dim]  Adjusted (recalculating scale_pos_weight for synthetic class balance)...[/dim]")
-    synth_params_adjusted = lgbm_params.copy()
-    synth_params_adjusted.pop('is_unbalance', None)  # Remove if present to avoid conflict
-
-    # Recalculate scale_pos_weight for synthetic data
-    n_pos_synth = np.sum(y_synthetic == 1)
-    n_neg_synth = np.sum(y_synthetic == 0)
-    synth_scale_pos_weight = n_neg_synth / n_pos_synth if n_pos_synth > 0 else 1.0
-    synth_params_adjusted['scale_pos_weight'] = synth_scale_pos_weight
-
-    real_scale_pos_weight = lgbm_params.get('scale_pos_weight', 'not set')
-    console.print(f"[dim]    scale_pos_weight: {real_scale_pos_weight} → {synth_scale_pos_weight:.2f}[/dim]")
-
-    synth_metrics_adjusted = evaluate_on_test(
-        params=synth_params_adjusted,
-        X_train=X_synthetic,
-        y_train=y_synthetic,
-        X_test=X_test,
-        y_test=y_test,
-        threshold=optimal_threshold,
-        seed=seed,
-    )
-
-    # Display unadjusted results
-    console.print("\n[yellow]Unadjusted Results (Drop-in Replacement Test)[/yellow]")
-    display_test_evaluation("Synthetic → Test (Unadjusted)", best_cv_score, synth_metrics_unadjusted)
-
-    # Display adjusted results
-    console.print("\n[green]Adjusted Results (Pattern Quality Test)[/green]")
-    display_test_evaluation("Synthetic → Test (Adjusted)", best_cv_score, synth_metrics_adjusted)
-
-    # Display dual comparison
-    console.print(f"\n[bold cyan]Performance Gap (Real - Synthetic)[/bold cyan]")
-    console.print(f"\n[yellow]  Unadjusted Gap (measures drop-in replacement):[/yellow]")
-    console.print(f"    AUROC Gap:     {real_metrics['auroc'] - synth_metrics_unadjusted['auroc']:+.4f}")
-    console.print(f"    F1 Gap:        {real_metrics['f1'] - synth_metrics_unadjusted['f1']:+.4f}")
-    console.print(f"    Precision Gap: {real_metrics['precision'] - synth_metrics_unadjusted['precision']:+.4f}")
-    console.print(f"    Recall Gap:    {real_metrics['recall'] - synth_metrics_unadjusted['recall']:+.4f}")
-
-    console.print(f"\n[green]  Adjusted Gap (measures pattern quality):[/green]")
-    console.print(f"    AUROC Gap:     {real_metrics['auroc'] - synth_metrics_adjusted['auroc']:+.4f}")
-    console.print(f"    F1 Gap:        {real_metrics['f1'] - synth_metrics_adjusted['f1']:+.4f}")
-    console.print(f"    Precision Gap: {real_metrics['precision'] - synth_metrics_adjusted['precision']:+.4f}")
-    console.print(f"    Recall Gap:    {real_metrics['recall'] - synth_metrics_adjusted['recall']:+.4f}")
-
-    console.print(f"\n[cyan]  Impact of Class Imbalance Adjustment:[/cyan]")
-    auroc_impact = (synth_metrics_unadjusted['auroc'] - synth_metrics_adjusted['auroc'])
-    recall_impact = (synth_metrics_unadjusted['recall'] - synth_metrics_adjusted['recall'])
-    console.print(f"    AUROC:  {auroc_impact:+.4f} (adjustment {'improved' if auroc_impact < 0 else 'worsened'} by {abs(auroc_impact):.4f})")
-    console.print(f"    Recall: {recall_impact:+.4f} (adjustment {'improved' if recall_impact < 0 else 'worsened'} by {abs(recall_impact):.4f})")
-
-
     # Set output file path
     if output_file is None:
         output_file = dseed_dir / "synthetic_evaluation.csv"
     else:
         output_file = Path(output_file)
 
-    # Run leaf alignment (DUAL: Unadjusted + Adjusted)
-    console.print(f"\n[bold green]{'═' * 70}[/bold green]")
-    console.print(f"[bold green]{'Leaf Alignment Analysis':^70}[/bold green]")
-    console.print(f"[bold green]{'═' * 70}[/bold green]\n")
-    console.print(f"  Training on: Synthetic data ({len(X_synthetic):,} samples)")
-    console.print(f"  Testing on: Real test data ({len(X_test):,} samples)")
-    console.print(f"  Using: Hyperparameters tuned on real training data")
+    # ═══════════════════════════════════════════════════════════════════════
+    # THREE-LEVEL EVALUATION BRANCHING
+    # ═══════════════════════════════════════════════════════════════════════
 
-    # 1. Unadjusted leaf alignment (drop-in replacement test)
-    console.print(f"\n[yellow]  Running unadjusted analysis (using real data's hyperparameters)...[/yellow]")
-    leaf_results_unadjusted = run_leaf_alignment(
-        X_synthetic=X_synthetic,
-        y_synthetic=y_synthetic,
-        X_real_test=X_test,
-        y_real_test=y_test,
-        lgbm_params=lgbm_params,
-        output_file=output_file.parent / f"{output_file.stem}_unadjusted.csv",
-        n_estimators=n_estimators,
-        n_jobs=n_jobs,
-        random_state=seed,
-    )
+    if retune_on_synthetic:
+        # ═══════════════════════════════════════════════════════════════════
+        # LEVEL 3: FULL HYPERPARAMETER RETUNING ON SYNTHETIC DATA
+        # ═══════════════════════════════════════════════════════════════════
+        console.print("\n[bold yellow]Running Level 3: Full Hyperparameter Retuning on Synthetic Data[/bold yellow]")
+        console.print("[dim]This evaluates best-case performance with synthetic data (~80s)[/dim]\n")
 
-    # 2. Adjusted leaf alignment (pattern quality test)
-    console.print(f"\n[green]  Running adjusted analysis (recalculating scale_pos_weight)...[/green]")
-    console.print(f"[dim]    scale_pos_weight: {real_scale_pos_weight} → {synth_scale_pos_weight:.2f}[/dim]")
-    leaf_results_adjusted = run_leaf_alignment(
-        X_synthetic=X_synthetic,
-        y_synthetic=y_synthetic,
-        X_real_test=X_test,
-        y_real_test=y_test,
-        lgbm_params=synth_params_adjusted,  # Use adjusted params
-        output_file=output_file.parent / f"{output_file.stem}_adjusted.csv",
-        n_estimators=n_estimators,
-        n_jobs=n_jobs,
-        random_state=seed,
-    )
+        # Run full hyperparameter tuning on synthetic data
+        console.print("[bold]Tuning hyperparameters on synthetic data...[/bold]")
+        synth_tuning_results = tune_hyperparameters(
+            X_train=X_synthetic,
+            y_train=y_synthetic,
+            n_trials=500,
+            n_folds=5,
+            threshold_metric="f1",
+            optimize_threshold=True,
+            n_jobs=n_jobs,
+            random_state=seed,
+        )
 
-    # Display dual summary
-    console.print(f"\n[bold cyan]{'═' * 70}[/bold cyan]")
-    console.print(f"[bold cyan]{'Synthetic Data Evaluation Summary':^70}[/bold cyan]")
-    console.print(f"[bold cyan]{'═' * 70}[/bold cyan]\n")
+        synth_lgbm_params = synth_tuning_results["lgbm_params"]
+        synth_optimal_threshold = synth_tuning_results["optimal_threshold"]
+        synth_best_cv_score = synth_tuning_results["best_cv_score"]
 
-    from rich.table import Table
+        console.print(f"  ✓ Synthetic tuning complete")
+        console.print(f"  CV ROC-AUC: {synth_best_cv_score:.4f}")
+        console.print(f"  Optimal threshold: {synth_optimal_threshold:.3f}")
 
-    # Unadjusted results table
-    console.print("[yellow]Unadjusted Results (Drop-in Replacement)[/yellow]")
-    table_unadj = Table(show_header=True, header_style="bold magenta")
-    table_unadj.add_column("Metric", style="cyan", width=30)
-    table_unadj.add_column("Value", justify="right", width=20)
-    table_unadj.add_column("Percentage", justify="right", width=15)
+        # Display hyperparameter comparison table
+        console.print(f"\n[bold cyan]Hyperparameter Comparison (Real vs Synthetic Tuning)[/bold cyan]")
+        from rich.table import Table
 
-    total_points = leaf_results_unadjusted["n_total"]
-    table_unadj.add_row("Total synthetic points", f"{total_points:,}", "100.0%")
-    table_unadj.add_row(
-        "[green]Beneficial points[/green]",
-        f"{leaf_results_unadjusted['n_beneficial']:,}",
-        f"{leaf_results_unadjusted['pct_beneficial']:.1f}%",
-    )
-    table_unadj.add_row(
-        "[yellow]Hallucinated points[/yellow]",
-        f"{leaf_results_unadjusted['n_hallucinated']:,}",
-        f"{leaf_results_unadjusted['pct_hallucinated']:.1f}%",
-    )
-    table_unadj.add_row(
-        "[cyan]Uncertain points[/cyan]",
-        f"{leaf_results_unadjusted['n_uncertain']:,}",
-        f"{leaf_results_unadjusted['pct_uncertain']:.1f}%",
-    )
-    table_unadj.add_row("", "", "")
-    table_unadj.add_row(
-        "Mean utility",
-        f"{leaf_results_unadjusted['mean_utility']:.4f}",
-        "",
-    )
-    table_unadj.add_row(
-        "Median utility",
-        f"{leaf_results_unadjusted['median_utility']:.4f}",
-        "",
-    )
-    console.print(table_unadj)
+        param_table = Table(show_header=True, header_style="bold magenta")
+        param_table.add_column("Hyperparameter", style="cyan", width=25)
+        param_table.add_column("Real Data", justify="right", width=15)
+        param_table.add_column("Synthetic Data", justify="right", width=15)
+        param_table.add_column("Change", justify="right", width=15)
 
-    # Adjusted results table
-    console.print(f"\n[green]Adjusted Results (Pattern Quality)[/green]")
-    table_adj = Table(show_header=True, header_style="bold magenta")
-    table_adj.add_column("Metric", style="cyan", width=30)
-    table_adj.add_column("Value", justify="right", width=20)
-    table_adj.add_column("Percentage", justify="right", width=15)
+        # Compare all hyperparameters
+        all_params = set(lgbm_params.keys()) | set(synth_lgbm_params.keys())
+        for param in sorted(all_params):
+            real_val = lgbm_params.get(param, "N/A")
+            synth_val = synth_lgbm_params.get(param, "N/A")
 
-    table_adj.add_row("Total synthetic points", f"{total_points:,}", "100.0%")
-    table_adj.add_row(
-        "[green]Beneficial points[/green]",
-        f"{leaf_results_adjusted['n_beneficial']:,}",
-        f"{leaf_results_adjusted['pct_beneficial']:.1f}%",
-    )
-    table_adj.add_row(
-        "[yellow]Hallucinated points[/yellow]",
-        f"{leaf_results_adjusted['n_hallucinated']:,}",
-        f"{leaf_results_adjusted['pct_hallucinated']:.1f}%",
-    )
-    table_adj.add_row(
-        "[cyan]Uncertain points[/cyan]",
-        f"{leaf_results_adjusted['n_uncertain']:,}",
-        f"{leaf_results_adjusted['pct_uncertain']:.1f}%",
-    )
-    table_adj.add_row("", "", "")
-    table_adj.add_row(
-        "Mean utility",
-        f"{leaf_results_adjusted['mean_utility']:.4f}",
-        "",
-    )
-    table_adj.add_row(
-        "Median utility",
-        f"{leaf_results_adjusted['median_utility']:.4f}",
-        "",
-    )
-    console.print(table_adj)
+            # Format values
+            real_str = f"{real_val:.4f}" if isinstance(real_val, float) else str(real_val)
+            synth_str = f"{synth_val:.4f}" if isinstance(synth_val, float) else str(synth_val)
 
-    # Comparison
-    console.print(f"\n[cyan]Impact of Class Imbalance Adjustment:[/cyan]")
-    ben_diff = leaf_results_adjusted['pct_beneficial'] - leaf_results_unadjusted['pct_beneficial']
-    hal_diff = leaf_results_adjusted['pct_hallucinated'] - leaf_results_unadjusted['pct_hallucinated']
-    console.print(f"  Beneficial:    {ben_diff:+.1f}pp (adjusted {'gained' if ben_diff > 0 else 'lost'} {abs(ben_diff):.1f}pp)")
-    console.print(f"  Hallucinated:  {hal_diff:+.1f}pp (adjusted {'gained' if hal_diff > 0 else 'lost'} {abs(hal_diff):.1f}pp)")
+            # Calculate change if both numeric
+            if isinstance(real_val, (int, float)) and isinstance(synth_val, (int, float)):
+                if isinstance(real_val, float) or isinstance(synth_val, float):
+                    change = synth_val - real_val
+                    change_str = f"{change:+.4f}"
+                else:
+                    change = synth_val - real_val
+                    change_str = f"{change:+d}"
+            else:
+                change_str = "—"
 
-    # Save JSON summary
-    summary_path = output_file.parent / f"{output_file.stem}_summary.json"
-    summary_output = {
-        "metadata": {
-            "dseed": dseed_dir.name,
-            "synthetic_file": synthetic_file.name,
-            "created_at": datetime.now().isoformat(),
-            "sdvaluation_version": "0.2.0",
-        },
-        "evaluation": {
-            "n_estimators": n_estimators,
-            "target_column": target_column,
-            "seed": seed,
-        },
-        "model_performance": {
-            "real_to_test": real_metrics,
-            "synthetic_to_test_unadjusted": synth_metrics_unadjusted,
-            "synthetic_to_test_adjusted": synth_metrics_adjusted,
-            "performance_gap_unadjusted": {
-                "auroc": float(real_metrics['auroc'] - synth_metrics_unadjusted['auroc']),
-                "f1": float(real_metrics['f1'] - synth_metrics_unadjusted['f1']),
-                "precision": float(real_metrics['precision'] - synth_metrics_unadjusted['precision']),
-                "recall": float(real_metrics['recall'] - synth_metrics_unadjusted['recall']),
+            param_table.add_row(param, real_str, synth_str, change_str)
+
+        # Add threshold and CV score
+        param_table.add_row("", "", "", "")
+        param_table.add_row(
+            "optimal_threshold",
+            f"{optimal_threshold:.3f}",
+            f"{synth_optimal_threshold:.3f}",
+            f"{synth_optimal_threshold - optimal_threshold:+.3f}"
+        )
+        param_table.add_row(
+            "best_cv_score",
+            f"{best_cv_score:.4f}",
+            f"{synth_best_cv_score:.4f}",
+            f"{synth_best_cv_score - best_cv_score:+.4f}"
+        )
+
+        console.print(param_table)
+
+        # Evaluate model performance
+        console.print(f"\n[bold magenta]{'═' * 70}[/bold magenta]")
+        console.print(f"[bold magenta]{'Model Performance Evaluation':^70}[/bold magenta]")
+        console.print(f"[bold magenta]{'═' * 70}[/bold magenta]\n")
+
+        # Synthetic: Synthetic training → Real test (with synthetic-tuned params)
+        console.print("[bold]Synthetic: Synthetic Training → Real Test (Synthetic-Tuned Params)[/bold]")
+        synth_metrics = evaluate_on_test(
+            params=synth_lgbm_params,
+            X_train=X_synthetic,
+            y_train=y_synthetic,
+            X_test=X_test,
+            y_test=y_test,
+            threshold=synth_optimal_threshold,
+            seed=seed,
+        )
+        display_test_evaluation("Synthetic → Test (Retuned)", synth_best_cv_score, synth_metrics)
+
+        # Display performance gap
+        console.print(f"\n[bold cyan]Performance Gap (Real - Synthetic)[/bold cyan]")
+        console.print(f"    AUROC Gap:     {real_metrics['auroc'] - synth_metrics['auroc']:+.4f}")
+        console.print(f"    F1 Gap:        {real_metrics['f1'] - synth_metrics['f1']:+.4f}")
+        console.print(f"    Precision Gap: {real_metrics['precision'] - synth_metrics['precision']:+.4f}")
+        console.print(f"    Recall Gap:    {real_metrics['recall'] - synth_metrics['recall']:+.4f}")
+
+        # Run leaf alignment with synthetic-tuned params
+        console.print(f"\n[bold green]{'═' * 70}[/bold green]")
+        console.print(f"[bold green]{'Leaf Alignment Analysis':^70}[/bold green]")
+        console.print(f"[bold green]{'═' * 70}[/bold green]\n")
+        console.print(f"  Training on: Synthetic data ({len(X_synthetic):,} samples)")
+        console.print(f"  Testing on: Real test data ({len(X_test):,} samples)")
+        console.print(f"  Using: Hyperparameters tuned on synthetic data")
+
+        leaf_results = run_leaf_alignment(
+            X_synthetic=X_synthetic,
+            y_synthetic=y_synthetic,
+            X_real_test=X_test,
+            y_real_test=y_test,
+            lgbm_params=synth_lgbm_params,
+            output_file=output_file,
+            n_estimators=n_estimators,
+            n_jobs=n_jobs,
+            random_state=seed,
+        )
+
+        # Display summary
+        console.print(f"\n[bold cyan]{'═' * 70}[/bold cyan]")
+        console.print(f"[bold cyan]{'Synthetic Data Evaluation Summary':^70}[/bold cyan]")
+        console.print(f"[bold cyan]{'═' * 70}[/bold cyan]\n")
+
+        summary_table = Table(show_header=True, header_style="bold magenta")
+        summary_table.add_column("Metric", style="cyan", width=30)
+        summary_table.add_column("Value", justify="right", width=20)
+        summary_table.add_column("Percentage", justify="right", width=15)
+
+        total_points = leaf_results["n_total"]
+        summary_table.add_row("Total synthetic points", f"{total_points:,}", "100.0%")
+        summary_table.add_row(
+            "[green]Beneficial points[/green]",
+            f"{leaf_results['n_beneficial']:,}",
+            f"{leaf_results['pct_beneficial']:.1f}%",
+        )
+        summary_table.add_row(
+            "[yellow]Hallucinated points[/yellow]",
+            f"{leaf_results['n_hallucinated']:,}",
+            f"{leaf_results['pct_hallucinated']:.1f}%",
+        )
+        summary_table.add_row(
+            "[cyan]Uncertain points[/cyan]",
+            f"{leaf_results['n_uncertain']:,}",
+            f"{leaf_results['pct_uncertain']:.1f}%",
+        )
+        summary_table.add_row("", "", "")
+        summary_table.add_row(
+            "Mean utility",
+            f"{leaf_results['mean_utility']:.4f}",
+            "",
+        )
+        summary_table.add_row(
+            "Median utility",
+            f"{leaf_results['median_utility']:.4f}",
+            "",
+        )
+        console.print(summary_table)
+
+        # Save JSON summary
+        summary_path = output_file.parent / f"{output_file.stem}_summary.json"
+        summary_output = {
+            "metadata": {
+                "dseed": dseed_dir.name,
+                "synthetic_file": synthetic_file.name,
+                "created_at": datetime.now().isoformat(),
+                "sdvaluation_version": "0.2.0",
+                "evaluation_level": 3,
+                "evaluation_level_name": "full_retuning",
             },
-            "performance_gap_adjusted": {
-                "auroc": float(real_metrics['auroc'] - synth_metrics_adjusted['auroc']),
-                "f1": float(real_metrics['f1'] - synth_metrics_adjusted['f1']),
-                "precision": float(real_metrics['precision'] - synth_metrics_adjusted['precision']),
-                "recall": float(real_metrics['recall'] - synth_metrics_adjusted['recall']),
+            "evaluation": {
+                "n_estimators": n_estimators,
+                "target_column": target_column,
+                "seed": seed,
             },
-        },
-        "leaf_alignment_unadjusted": leaf_results_unadjusted,
-        "leaf_alignment_adjusted": leaf_results_adjusted,
-    }
+            "hyperparameter_comparison": {
+                "real_tuned": {
+                    "lgbm_params": lgbm_params,
+                    "optimal_threshold": float(optimal_threshold),
+                    "best_cv_score": float(best_cv_score),
+                },
+                "synthetic_tuned": {
+                    "lgbm_params": synth_lgbm_params,
+                    "optimal_threshold": float(synth_optimal_threshold),
+                    "best_cv_score": float(synth_best_cv_score),
+                },
+            },
+            "model_performance": {
+                "real_to_test": real_metrics,
+                "synthetic_to_test": synth_metrics,
+                "performance_gap": {
+                    "auroc": float(real_metrics['auroc'] - synth_metrics['auroc']),
+                    "f1": float(real_metrics['f1'] - synth_metrics['f1']),
+                    "precision": float(real_metrics['precision'] - synth_metrics['precision']),
+                    "recall": float(real_metrics['recall'] - synth_metrics['recall']),
+                },
+            },
+            "leaf_alignment": leaf_results,
+        }
 
-    with open(summary_path, "w") as f:
-        json.dump(summary_output, f, indent=2)
+        with open(summary_path, "w") as f:
+            json.dump(summary_output, f, indent=2)
 
-    console.print(f"\n[bold green]✓ Evaluation complete![/bold green]")
-    console.print(f"[green]Per-point utilities (unadjusted) saved to: {output_file.parent / f'{output_file.stem}_unadjusted.csv'}[/green]")
-    console.print(f"[green]Per-point utilities (adjusted) saved to: {output_file.parent / f'{output_file.stem}_adjusted.csv'}[/green]")
-    console.print(f"[green]Summary statistics saved to: {summary_path}[/green]")
+        console.print(f"\n[bold green]✓ Evaluation complete![/bold green]")
+        console.print(f"[green]Per-point utilities saved to: {output_file}[/green]")
+        console.print(f"[green]Summary statistics saved to: {summary_path}[/green]")
 
-    return summary_output
+        return summary_output
+
+    elif adjust_for_imbalance:
+        # ═══════════════════════════════════════════════════════════════════
+        # LEVEL 2: DUAL EVALUATION (UNADJUSTED + ADJUSTED)
+        # ═══════════════════════════════════════════════════════════════════
+        console.print("\n[bold yellow]Running Level 2: Dual Evaluation (Unadjusted + Adjusted)[/bold yellow]")
+        console.print("[dim]This separates class imbalance effects from pattern quality (~16s)[/dim]\n")
+
+        # Synthetic: Synthetic training → Real test (DUAL EVALUATION)
+        console.print("[bold]Synthetic: Synthetic Training → Real Test[/bold]")
+
+        # 1. Unadjusted evaluation (drop-in replacement test)
+        console.print("[dim]  Unadjusted (using real data's hyperparameters as-is)...[/dim]")
+        synth_metrics_unadjusted = evaluate_on_test(
+            params=lgbm_params,
+            X_train=X_synthetic,
+            y_train=y_synthetic,
+            X_test=X_test,
+            y_test=y_test,
+            threshold=optimal_threshold,
+            seed=seed,
+        )
+
+        # 2. Adjusted evaluation (pattern quality test with threshold re-optimization)
+        console.print("[dim]  Adjusted (recalculating scale_pos_weight and re-optimizing threshold)...[/dim]")
+        synth_params_adjusted = lgbm_params.copy()
+        synth_params_adjusted.pop('is_unbalance', None)  # Remove if present to avoid conflict
+
+        # Recalculate scale_pos_weight for synthetic data
+        n_pos_synth = np.sum(y_synthetic == 1)
+        n_neg_synth = np.sum(y_synthetic == 0)
+        synth_scale_pos_weight = n_neg_synth / n_pos_synth if n_pos_synth > 0 else 1.0
+        synth_params_adjusted['scale_pos_weight'] = synth_scale_pos_weight
+
+        real_scale_pos_weight = lgbm_params.get('scale_pos_weight', 'not set')
+        console.print(f"[dim]    scale_pos_weight: {real_scale_pos_weight} → {synth_scale_pos_weight:.2f}[/dim]")
+
+        # Re-optimize threshold on synthetic data with adjusted weights
+        console.print("[dim]  Re-optimizing threshold on synthetic data...[/dim]")
+        from sklearn.model_selection import StratifiedKFold
+        from sklearn.metrics import roc_auc_score
+
+        # Use 5-fold CV to find optimal threshold on synthetic data
+        kfold = StratifiedKFold(n_splits=5, shuffle=True, random_state=seed)
+        cv_thresholds = []
+
+        for train_idx, val_idx in kfold.split(X_synthetic, y_synthetic):
+            X_train_fold = X_synthetic.iloc[train_idx]
+            y_train_fold = y_synthetic.iloc[train_idx]
+            X_val_fold = X_synthetic.iloc[val_idx]
+            y_val_fold = y_synthetic.iloc[val_idx]
+
+            # Train model
+            model = lgb.LGBMClassifier(**synth_params_adjusted, random_state=seed, verbose=-1)
+            model.fit(X_train_fold, y_train_fold)
+
+            # Get predictions
+            y_pred_proba = model.predict_proba(X_val_fold)[:, 1]
+
+            # Find optimal threshold for F1
+            from sklearn.metrics import f1_score
+            thresholds = np.linspace(0.01, 0.99, 99)
+            f1_scores = [f1_score(y_val_fold, y_pred_proba >= t) for t in thresholds]
+            best_threshold_idx = np.argmax(f1_scores)
+            cv_thresholds.append(thresholds[best_threshold_idx])
+
+        synth_optimal_threshold = np.mean(cv_thresholds)
+        console.print(f"[dim]    optimal_threshold: {optimal_threshold:.3f} → {synth_optimal_threshold:.3f}[/dim]")
+
+        synth_metrics_adjusted = evaluate_on_test(
+            params=synth_params_adjusted,
+            X_train=X_synthetic,
+            y_train=y_synthetic,
+            X_test=X_test,
+            y_test=y_test,
+            threshold=synth_optimal_threshold,
+            seed=seed,
+        )
+
+        # Display results
+        console.print(f"\n[bold magenta]{'═' * 70}[/bold magenta]")
+        console.print(f"[bold magenta]{'Model Performance Evaluation':^70}[/bold magenta]")
+        console.print(f"[bold magenta]{'═' * 70}[/bold magenta]\n")
+
+        console.print("[yellow]Unadjusted Results (Drop-in Replacement Test)[/yellow]")
+        display_test_evaluation("Synthetic → Test (Unadjusted)", best_cv_score, synth_metrics_unadjusted)
+
+        console.print("\n[green]Adjusted Results (Pattern Quality Test)[/green]")
+        display_test_evaluation("Synthetic → Test (Adjusted)", best_cv_score, synth_metrics_adjusted)
+
+        # Display dual comparison
+        console.print(f"\n[bold cyan]Performance Gap (Real - Synthetic)[/bold cyan]")
+        console.print(f"\n[yellow]  Unadjusted Gap (measures drop-in replacement):[/yellow]")
+        console.print(f"    AUROC Gap:     {real_metrics['auroc'] - synth_metrics_unadjusted['auroc']:+.4f}")
+        console.print(f"    F1 Gap:        {real_metrics['f1'] - synth_metrics_unadjusted['f1']:+.4f}")
+        console.print(f"    Precision Gap: {real_metrics['precision'] - synth_metrics_unadjusted['precision']:+.4f}")
+        console.print(f"    Recall Gap:    {real_metrics['recall'] - synth_metrics_unadjusted['recall']:+.4f}")
+
+        console.print(f"\n[green]  Adjusted Gap (measures pattern quality):[/green]")
+        console.print(f"    AUROC Gap:     {real_metrics['auroc'] - synth_metrics_adjusted['auroc']:+.4f}")
+        console.print(f"    F1 Gap:        {real_metrics['f1'] - synth_metrics_adjusted['f1']:+.4f}")
+        console.print(f"    Precision Gap: {real_metrics['precision'] - synth_metrics_adjusted['precision']:+.4f}")
+        console.print(f"    Recall Gap:    {real_metrics['recall'] - synth_metrics_adjusted['recall']:+.4f}")
+
+        console.print(f"\n[cyan]  Impact of Class Imbalance Adjustment:[/cyan]")
+        auroc_impact = (synth_metrics_unadjusted['auroc'] - synth_metrics_adjusted['auroc'])
+        recall_impact = (synth_metrics_unadjusted['recall'] - synth_metrics_adjusted['recall'])
+        console.print(f"    AUROC:  {auroc_impact:+.4f} (adjustment {'improved' if auroc_impact < 0 else 'worsened'} by {abs(auroc_impact):.4f})")
+        console.print(f"    Recall: {recall_impact:+.4f} (adjustment {'improved' if recall_impact < 0 else 'worsened'} by {abs(recall_impact):.4f})")
+
+        # Run leaf alignment (DUAL: Unadjusted + Adjusted)
+        console.print(f"\n[bold green]{'═' * 70}[/bold green]")
+        console.print(f"[bold green]{'Leaf Alignment Analysis':^70}[/bold green]")
+        console.print(f"[bold green]{'═' * 70}[/bold green]\n")
+        console.print(f"  Training on: Synthetic data ({len(X_synthetic):,} samples)")
+        console.print(f"  Testing on: Real test data ({len(X_test):,} samples)")
+        console.print(f"  Using: Hyperparameters tuned on real training data")
+
+        # 1. Unadjusted leaf alignment (drop-in replacement test)
+        console.print(f"\n[yellow]  Running unadjusted analysis (using real data's hyperparameters)...[/yellow]")
+        leaf_results_unadjusted = run_leaf_alignment(
+            X_synthetic=X_synthetic,
+            y_synthetic=y_synthetic,
+            X_real_test=X_test,
+            y_real_test=y_test,
+            lgbm_params=lgbm_params,
+            output_file=output_file.parent / f"{output_file.stem}_unadjusted.csv",
+            n_estimators=n_estimators,
+            n_jobs=n_jobs,
+            random_state=seed,
+        )
+
+        # 2. Adjusted leaf alignment (pattern quality test)
+        console.print(f"\n[green]  Running adjusted analysis (recalculating scale_pos_weight)...[/green]")
+        console.print(f"[dim]    scale_pos_weight: {real_scale_pos_weight} → {synth_scale_pos_weight:.2f}[/dim]")
+        leaf_results_adjusted = run_leaf_alignment(
+            X_synthetic=X_synthetic,
+            y_synthetic=y_synthetic,
+            X_real_test=X_test,
+            y_real_test=y_test,
+            lgbm_params=synth_params_adjusted,  # Use adjusted params
+            output_file=output_file.parent / f"{output_file.stem}_adjusted.csv",
+            n_estimators=n_estimators,
+            n_jobs=n_jobs,
+            random_state=seed,
+        )
+
+        # Display dual summary
+        console.print(f"\n[bold cyan]{'═' * 70}[/bold cyan]")
+        console.print(f"[bold cyan]{'Synthetic Data Evaluation Summary':^70}[/bold cyan]")
+        console.print(f"[bold cyan]{'═' * 70}[/bold cyan]\n")
+
+        from rich.table import Table
+
+        # Unadjusted results table
+        console.print("[yellow]Unadjusted Results (Drop-in Replacement)[/yellow]")
+        table_unadj = Table(show_header=True, header_style="bold magenta")
+        table_unadj.add_column("Metric", style="cyan", width=30)
+        table_unadj.add_column("Value", justify="right", width=20)
+        table_unadj.add_column("Percentage", justify="right", width=15)
+
+        total_points = leaf_results_unadjusted["n_total"]
+        table_unadj.add_row("Total synthetic points", f"{total_points:,}", "100.0%")
+        table_unadj.add_row(
+            "[green]Beneficial points[/green]",
+            f"{leaf_results_unadjusted['n_beneficial']:,}",
+            f"{leaf_results_unadjusted['pct_beneficial']:.1f}%",
+        )
+        table_unadj.add_row(
+            "[yellow]Hallucinated points[/yellow]",
+            f"{leaf_results_unadjusted['n_hallucinated']:,}",
+            f"{leaf_results_unadjusted['pct_hallucinated']:.1f}%",
+        )
+        table_unadj.add_row(
+            "[cyan]Uncertain points[/cyan]",
+            f"{leaf_results_unadjusted['n_uncertain']:,}",
+            f"{leaf_results_unadjusted['pct_uncertain']:.1f}%",
+        )
+        table_unadj.add_row("", "", "")
+        table_unadj.add_row(
+            "Mean utility",
+            f"{leaf_results_unadjusted['mean_utility']:.4f}",
+            "",
+        )
+        table_unadj.add_row(
+            "Median utility",
+            f"{leaf_results_unadjusted['median_utility']:.4f}",
+            "",
+        )
+        console.print(table_unadj)
+
+        # Adjusted results table
+        console.print(f"\n[green]Adjusted Results (Pattern Quality)[/green]")
+        table_adj = Table(show_header=True, header_style="bold magenta")
+        table_adj.add_column("Metric", style="cyan", width=30)
+        table_adj.add_column("Value", justify="right", width=20)
+        table_adj.add_column("Percentage", justify="right", width=15)
+
+        table_adj.add_row("Total synthetic points", f"{total_points:,}", "100.0%")
+        table_adj.add_row(
+            "[green]Beneficial points[/green]",
+            f"{leaf_results_adjusted['n_beneficial']:,}",
+            f"{leaf_results_adjusted['pct_beneficial']:.1f}%",
+        )
+        table_adj.add_row(
+            "[yellow]Hallucinated points[/yellow]",
+            f"{leaf_results_adjusted['n_hallucinated']:,}",
+            f"{leaf_results_adjusted['pct_hallucinated']:.1f}%",
+        )
+        table_adj.add_row(
+            "[cyan]Uncertain points[/cyan]",
+            f"{leaf_results_adjusted['n_uncertain']:,}",
+            f"{leaf_results_adjusted['pct_uncertain']:.1f}%",
+        )
+        table_adj.add_row("", "", "")
+        table_adj.add_row(
+            "Mean utility",
+            f"{leaf_results_adjusted['mean_utility']:.4f}",
+            "",
+        )
+        table_adj.add_row(
+            "Median utility",
+            f"{leaf_results_adjusted['median_utility']:.4f}",
+            "",
+        )
+        console.print(table_adj)
+
+        # Comparison
+        console.print(f"\n[cyan]Impact of Class Imbalance Adjustment:[/cyan]")
+        ben_diff = leaf_results_adjusted['pct_beneficial'] - leaf_results_unadjusted['pct_beneficial']
+        hal_diff = leaf_results_adjusted['pct_hallucinated'] - leaf_results_unadjusted['pct_hallucinated']
+        console.print(f"  Beneficial:    {ben_diff:+.1f}pp (adjusted {'gained' if ben_diff > 0 else 'lost'} {abs(ben_diff):.1f}pp)")
+        console.print(f"  Hallucinated:  {hal_diff:+.1f}pp (adjusted {'gained' if hal_diff > 0 else 'lost'} {abs(hal_diff):.1f}pp)")
+
+        # Save JSON summary
+        summary_path = output_file.parent / f"{output_file.stem}_summary.json"
+        summary_output = {
+            "metadata": {
+                "dseed": dseed_dir.name,
+                "synthetic_file": synthetic_file.name,
+                "created_at": datetime.now().isoformat(),
+                "sdvaluation_version": "0.2.0",
+                "evaluation_level": 2,
+                "evaluation_level_name": "adjusted_for_imbalance",
+            },
+            "evaluation": {
+                "n_estimators": n_estimators,
+                "target_column": target_column,
+                "seed": seed,
+            },
+            "model_performance": {
+                "real_to_test": real_metrics,
+                "synthetic_to_test_unadjusted": synth_metrics_unadjusted,
+                "synthetic_to_test_adjusted": synth_metrics_adjusted,
+                "performance_gap_unadjusted": {
+                    "auroc": float(real_metrics['auroc'] - synth_metrics_unadjusted['auroc']),
+                    "f1": float(real_metrics['f1'] - synth_metrics_unadjusted['f1']),
+                    "precision": float(real_metrics['precision'] - synth_metrics_unadjusted['precision']),
+                    "recall": float(real_metrics['recall'] - synth_metrics_unadjusted['recall']),
+                },
+                "performance_gap_adjusted": {
+                    "auroc": float(real_metrics['auroc'] - synth_metrics_adjusted['auroc']),
+                    "f1": float(real_metrics['f1'] - synth_metrics_adjusted['f1']),
+                    "precision": float(real_metrics['precision'] - synth_metrics_adjusted['precision']),
+                    "recall": float(real_metrics['recall'] - synth_metrics_adjusted['recall']),
+                },
+            },
+            "leaf_alignment_unadjusted": leaf_results_unadjusted,
+            "leaf_alignment_adjusted": leaf_results_adjusted,
+        }
+
+        with open(summary_path, "w") as f:
+            json.dump(summary_output, f, indent=2)
+
+        console.print(f"\n[bold green]✓ Evaluation complete![/bold green]")
+        console.print(f"[green]Per-point utilities (unadjusted) saved to: {output_file.parent / f'{output_file.stem}_unadjusted.csv'}[/green]")
+        console.print(f"[green]Per-point utilities (adjusted) saved to: {output_file.parent / f'{output_file.stem}_adjusted.csv'}[/green]")
+        console.print(f"[green]Summary statistics saved to: {summary_path}[/green]")
+
+        return summary_output
+
+    else:
+        # ═══════════════════════════════════════════════════════════════════
+        # LEVEL 1: UNADJUSTED EVALUATION (DEFAULT)
+        # ═══════════════════════════════════════════════════════════════════
+        console.print("\n[bold yellow]Running Level 1: Unadjusted Evaluation (Drop-in Replacement Test)[/bold yellow]")
+        console.print("[dim]This tests if synthetic can replace real with zero changes (~8s)[/dim]\n")
+
+        # Synthetic: Synthetic training → Real test (unadjusted only)
+        console.print("[bold]Synthetic: Synthetic Training → Real Test[/bold]")
+        console.print("[dim]  Using real data's hyperparameters as-is...[/dim]")
+
+        synth_metrics = evaluate_on_test(
+            params=lgbm_params,
+            X_train=X_synthetic,
+            y_train=y_synthetic,
+            X_test=X_test,
+            y_test=y_test,
+            threshold=optimal_threshold,
+            seed=seed,
+        )
+
+        # Display results
+        console.print(f"\n[bold magenta]{'═' * 70}[/bold magenta]")
+        console.print(f"[bold magenta]{'Model Performance Evaluation':^70}[/bold magenta]")
+        console.print(f"[bold magenta]{'═' * 70}[/bold magenta]\n")
+
+        display_test_evaluation("Synthetic → Test", best_cv_score, synth_metrics)
+
+        # Display performance gap
+        console.print(f"\n[bold cyan]Performance Gap (Real - Synthetic)[/bold cyan]")
+        console.print(f"    AUROC Gap:     {real_metrics['auroc'] - synth_metrics['auroc']:+.4f}")
+        console.print(f"    F1 Gap:        {real_metrics['f1'] - synth_metrics['f1']:+.4f}")
+        console.print(f"    Precision Gap: {real_metrics['precision'] - synth_metrics['precision']:+.4f}")
+        console.print(f"    Recall Gap:    {real_metrics['recall'] - synth_metrics['recall']:+.4f}")
+
+        # Run leaf alignment (unadjusted only)
+        console.print(f"\n[bold green]{'═' * 70}[/bold green]")
+        console.print(f"[bold green]{'Leaf Alignment Analysis':^70}[/bold green]")
+        console.print(f"[bold green]{'═' * 70}[/bold green]\n")
+        console.print(f"  Training on: Synthetic data ({len(X_synthetic):,} samples)")
+        console.print(f"  Testing on: Real test data ({len(X_test):,} samples)")
+        console.print(f"  Using: Hyperparameters tuned on real training data (unadjusted)")
+
+        leaf_results = run_leaf_alignment(
+            X_synthetic=X_synthetic,
+            y_synthetic=y_synthetic,
+            X_real_test=X_test,
+            y_real_test=y_test,
+            lgbm_params=lgbm_params,
+            output_file=output_file,
+            n_estimators=n_estimators,
+            n_jobs=n_jobs,
+            random_state=seed,
+        )
+
+        # Display summary
+        console.print(f"\n[bold cyan]{'═' * 70}[/bold cyan]")
+        console.print(f"[bold cyan]{'Synthetic Data Evaluation Summary':^70}[/bold cyan]")
+        console.print(f"[bold cyan]{'═' * 70}[/bold cyan]\n")
+
+        from rich.table import Table
+
+        summary_table = Table(show_header=True, header_style="bold magenta")
+        summary_table.add_column("Metric", style="cyan", width=30)
+        summary_table.add_column("Value", justify="right", width=20)
+        summary_table.add_column("Percentage", justify="right", width=15)
+
+        total_points = leaf_results["n_total"]
+        summary_table.add_row("Total synthetic points", f"{total_points:,}", "100.0%")
+        summary_table.add_row(
+            "[green]Beneficial points[/green]",
+            f"{leaf_results['n_beneficial']:,}",
+            f"{leaf_results['pct_beneficial']:.1f}%",
+        )
+        summary_table.add_row(
+            "[yellow]Hallucinated points[/yellow]",
+            f"{leaf_results['n_hallucinated']:,}",
+            f"{leaf_results['pct_hallucinated']:.1f}%",
+        )
+        summary_table.add_row(
+            "[cyan]Uncertain points[/cyan]",
+            f"{leaf_results['n_uncertain']:,}",
+            f"{leaf_results['pct_uncertain']:.1f}%",
+        )
+        summary_table.add_row("", "", "")
+        summary_table.add_row(
+            "Mean utility",
+            f"{leaf_results['mean_utility']:.4f}",
+            "",
+        )
+        summary_table.add_row(
+            "Median utility",
+            f"{leaf_results['median_utility']:.4f}",
+            "",
+        )
+        console.print(summary_table)
+
+        # Save JSON summary
+        summary_path = output_file.parent / f"{output_file.stem}_summary.json"
+        summary_output = {
+            "metadata": {
+                "dseed": dseed_dir.name,
+                "synthetic_file": synthetic_file.name,
+                "created_at": datetime.now().isoformat(),
+                "sdvaluation_version": "0.2.0",
+                "evaluation_level": 1,
+                "evaluation_level_name": "unadjusted",
+            },
+            "evaluation": {
+                "n_estimators": n_estimators,
+                "target_column": target_column,
+                "seed": seed,
+            },
+            "model_performance": {
+                "real_to_test": real_metrics,
+                "synthetic_to_test": synth_metrics,
+                "performance_gap": {
+                    "auroc": float(real_metrics['auroc'] - synth_metrics['auroc']),
+                    "f1": float(real_metrics['f1'] - synth_metrics['f1']),
+                    "precision": float(real_metrics['precision'] - synth_metrics['precision']),
+                    "recall": float(real_metrics['recall'] - synth_metrics['recall']),
+                },
+            },
+            "leaf_alignment": leaf_results,
+        }
+
+        with open(summary_path, "w") as f:
+            json.dump(summary_output, f, indent=2)
+
+        console.print(f"\n[bold green]✓ Evaluation complete![/bold green]")
+        console.print(f"[green]Per-point utilities saved to: {output_file}[/green]")
+        console.print(f"[green]Summary statistics saved to: {summary_path}[/green]")
+
+        return summary_output
 
 
 def run_leaf_alignment_baseline(
