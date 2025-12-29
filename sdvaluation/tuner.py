@@ -1493,6 +1493,11 @@ def evaluate_synthetic(
         kfold = StratifiedKFold(n_splits=5, shuffle=True, random_state=seed)
         cv_thresholds = []
 
+        # Prepare params for model training (ensure verbose and random_state are set)
+        model_params = synth_params_adjusted.copy()
+        model_params['random_state'] = seed
+        model_params['verbose'] = -1
+
         for train_idx, val_idx in kfold.split(X_synthetic, y_synthetic):
             X_train_fold = X_synthetic.iloc[train_idx]
             y_train_fold = y_synthetic.iloc[train_idx]
@@ -1500,7 +1505,7 @@ def evaluate_synthetic(
             y_val_fold = y_synthetic.iloc[val_idx]
 
             # Train model
-            model = lgb.LGBMClassifier(**synth_params_adjusted, random_state=seed, verbose=-1)
+            model = lgb.LGBMClassifier(**model_params)
             model.fit(X_train_fold, y_train_fold)
 
             # Get predictions
