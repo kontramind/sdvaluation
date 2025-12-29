@@ -224,11 +224,12 @@ class LGBMTuner:
         if n_samples < 15000:
             # MIMIC-III optimized ranges for small datasets (< 15k samples)
             # Based on medical data best practices: stable, less prone to overfitting
-            max_leaves_upper = 50
-            max_depth_upper = 7  # Was 8, tightened for clinical data
-            min_reg_lambda = 0.5  # Force regularization
-            learning_rate_range = (0.01, 0.05)  # Narrow, stable range for noisy medical data
-            min_data_in_leaf_range = (50, 200)  # Higher minimum for meaningful patient cohorts
+            # Tightened to reduce CV→Test gap (targeting ±2% instead of -7%+)
+            max_leaves_upper = 31  # Force simpler trees (was 50)
+            max_depth_upper = 5  # Shallower trees (was 7)
+            min_reg_lambda = 1.0  # Stronger regularization (was 0.5)
+            learning_rate_range = (0.01, 0.03)  # Slower, more stable learning (was 0.01-0.05)
+            min_data_in_leaf_range = (100, 200)  # Larger leaves for stability (was 50-200)
         else:
             # Wider ranges for large datasets (>= 15k samples)
             max_leaves_upper = 100
