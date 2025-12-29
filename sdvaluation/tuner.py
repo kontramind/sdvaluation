@@ -257,6 +257,10 @@ class LGBMTuner:
         params["reg_alpha"] = trial.suggest_float("reg_alpha", 0.0, 5.0)  # L1
         params["reg_lambda"] = trial.suggest_float("reg_lambda", min_reg_lambda, 10.0)  # L2 with minimum
 
+        # Complexity penalties (Option 2: prevent overfitting through split quality and smoothing)
+        params["min_gain_to_split"] = trial.suggest_float("min_gain_to_split", 0.0, 1.0)  # Minimum gain required to split
+        params["path_smooth"] = trial.suggest_float("path_smooth", 0.0, 5.0)  # Smoothing for leaf values
+
         # Feature and sample sampling
         params["feature_fraction"] = trial.suggest_float("feature_fraction", 0.5, 1.0)
         params["subsample"] = trial.suggest_float("subsample", 0.6, 1.0)
