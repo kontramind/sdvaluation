@@ -1218,9 +1218,12 @@ def evaluate_synthetic(
     )
     display_test_evaluation("Real → Test", best_cv_score, real_metrics)
 
-    # Synthetic: Synthetic training → Real test
+    # Synthetic: Synthetic training → Real test (DUAL EVALUATION)
     console.print("\n[bold]Synthetic: Synthetic Training → Real Test[/bold]")
-    synth_metrics = evaluate_on_test(
+
+    # 1. Unadjusted evaluation (drop-in replacement test)
+    console.print("[dim]  Unadjusted (using real data's hyperparameters as-is)...[/dim]")
+    synth_metrics_unadjusted = evaluate_on_test(
         params=lgbm_params,
         X_train=X_synthetic,
         y_train=y_synthetic,
@@ -1229,14 +1232,59 @@ def evaluate_synthetic(
         threshold=optimal_threshold,
         seed=seed,
     )
-    display_test_evaluation("Synthetic → Test", best_cv_score, synth_metrics)
 
-    # Display comparison
+    # 2. Adjusted evaluation (pattern quality test)
+    console.print("[dim]  Adjusted (recalculating scale_pos_weight for synthetic class balance)...[/dim]")
+    synth_params_adjusted = lgbm_params.copy()
+    synth_params_adjusted.pop('is_unbalance', None)  # Remove if present to avoid conflict
+
+    # Recalculate scale_pos_weight for synthetic data
+    n_pos_synth = np.sum(y_synthetic == 1)
+    n_neg_synth = np.sum(y_synthetic == 0)
+    synth_scale_pos_weight = n_neg_synth / n_pos_synth if n_pos_synth > 0 else 1.0
+    synth_params_adjusted['scale_pos_weight'] = synth_scale_pos_weight
+
+    real_scale_pos_weight = lgbm_params.get('scale_pos_weight', 'not set')
+    console.print(f"[dim]    scale_pos_weight: {real_scale_pos_weight} → {synth_scale_pos_weight:.2f}[/dim]")
+
+    synth_metrics_adjusted = evaluate_on_test(
+        params=synth_params_adjusted,
+        X_train=X_synthetic,
+        y_train=y_synthetic,
+        X_test=X_test,
+        y_test=y_test,
+        threshold=optimal_threshold,
+        seed=seed,
+    )
+
+    # Display unadjusted results
+    console.print("\n[yellow]Unadjusted Results (Drop-in Replacement Test)[/yellow]")
+    display_test_evaluation("Synthetic → Test (Unadjusted)", best_cv_score, synth_metrics_unadjusted)
+
+    # Display adjusted results
+    console.print("\n[green]Adjusted Results (Pattern Quality Test)[/green]")
+    display_test_evaluation("Synthetic → Test (Adjusted)", best_cv_score, synth_metrics_adjusted)
+
+    # Display dual comparison
     console.print(f"\n[bold cyan]Performance Gap (Real - Synthetic)[/bold cyan]")
-    console.print(f"  AUROC Gap:     {real_metrics['auroc'] - synth_metrics['auroc']:+.4f}")
-    console.print(f"  F1 Gap:        {real_metrics['f1'] - synth_metrics['f1']:+.4f}")
-    console.print(f"  Precision Gap: {real_metrics['precision'] - synth_metrics['precision']:+.4f}")
-    console.print(f"  Recall Gap:    {real_metrics['recall'] - synth_metrics['recall']:+.4f}")
+    console.print(f"\n[yellow]  Unadjusted Gap (measures drop-in replacement):[/yellow]")
+    console.print(f"    AUROC Gap:     {real_metrics['auroc'] - synth_metrics_unadjusted['auroc']:+.4f}")
+    console.print(f"    F1 Gap:        {real_metrics['f1'] - synth_metrics_unadjusted['f1']:+.4f}")
+    console.print(f"    Precision Gap: {real_metrics['precision'] - synth_metrics_unadjusted['precision']:+.4f}")
+    console.print(f"    Recall Gap:    {real_metrics['recall'] - synth_metrics_unadjusted['recall']:+.4f}")
+
+    console.print(f"\n[green]  Adjusted Gap (measures pattern quality):[/green]")
+    console.print(f"    AUROC Gap:     {real_metrics['auroc'] - synth_metrics_adjusted['auroc']:+.4f}")
+    console.print(f"    F1 Gap:        {real_metrics['f1'] - synth_metrics_adjusted['f1']:+.4f}")
+    console.print(f"    Precision Gap: {real_metrics['precision'] - synth_metrics_adjusted['precision']:+.4f}")
+    console.print(f"    Recall Gap:    {real_metrics['recall'] - synth_metrics_adjusted['recall']:+.4f}")
+
+    console.print(f"\n[cyan]  Impact of Class Imbalance Adjustment:[/cyan]")
+    auroc_impact = (synth_metrics_unadjusted['auroc'] - synth_metrics_adjusted['auroc'])
+    recall_impact = (synth_metrics_unadjusted['recall'] - synth_metrics_adjusted['recall'])
+    console.print(f"    AUROC:  {auroc_impact:+.4f} (adjustment {'improved' if auroc_impact < 0 else 'worsened'} by {abs(auroc_impact):.4f})")
+    console.print(f"    Recall: {recall_impact:+.4f} (adjustment {'improved' if recall_impact < 0 else 'worsened'} by {abs(recall_impact):.4f})")
+
 
     # Set output file path
     if output_file is None:
