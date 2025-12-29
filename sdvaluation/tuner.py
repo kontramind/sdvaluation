@@ -16,7 +16,9 @@ Combines the best features from both previous implementations:
 """
 
 import json
+import os
 import warnings
+from contextlib import redirect_stdout, redirect_stderr
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Literal, Optional, Tuple
@@ -296,15 +298,17 @@ class LGBMTuner:
             val_data = lgb.Dataset(X_val, label=y_val, reference=train_data)
 
             # Train model with early stopping (suppress all output)
-            model = lgb.train(
-                params,
-                train_data,
-                valid_sets=[val_data],
-                callbacks=[
-                    lgb.early_stopping(stopping_rounds=early_stopping_rounds),
-                    lgb.log_evaluation(-1),  # Fully suppress all training output
-                ],
-            )
+            with open(os.devnull, 'w') as devnull:
+                with redirect_stdout(devnull), redirect_stderr(devnull):
+                    model = lgb.train(
+                        params,
+                        train_data,
+                        valid_sets=[val_data],
+                        callbacks=[
+                            lgb.early_stopping(stopping_rounds=early_stopping_rounds),
+                            lgb.log_evaluation(0),
+                        ],
+                    )
 
             # Predict on validation set
             y_pred_proba = model.predict(X_val, num_iteration=model.best_iteration)
