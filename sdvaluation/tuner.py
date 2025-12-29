@@ -295,14 +295,14 @@ class LGBMTuner:
             train_data = lgb.Dataset(X_tr, label=y_tr)
             val_data = lgb.Dataset(X_val, label=y_val, reference=train_data)
 
-            # Train model with early stopping
+            # Train model with early stopping (suppress all output)
             model = lgb.train(
                 params,
                 train_data,
                 valid_sets=[val_data],
                 callbacks=[
                     lgb.early_stopping(stopping_rounds=early_stopping_rounds),
-                    lgb.log_evaluation(period=0),  # Suppress output
+                    lgb.log_evaluation(-1),  # Fully suppress all training output
                 ],
             )
 
