@@ -727,7 +727,7 @@ def evaluate_synthetic_data(
     adjust_for_imbalance: bool = typer.Option(
         False,
         "--adjust-for-imbalance",
-        help="Level 2: Run dual evaluation (unadjusted + adjusted for class imbalance)",
+        help="Level 2: Adjust for class imbalance (recalculates scale_pos_weight and threshold)",
     ),
     retune_on_synthetic: bool = typer.Option(
         False,
