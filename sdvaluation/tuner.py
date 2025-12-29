@@ -1115,10 +1115,12 @@ def evaluate_synthetic(
         # New simplified format
         lgbm_params = hyperparams_data["hyperparams"]["lgbm_params"]
         optimal_threshold = hyperparams_data["hyperparams"]["optimal_threshold"]
+        best_cv_score = hyperparams_data["hyperparams"]["best_cv_score"]
     elif "optimal" in hyperparams_data:
         # Old dual scenario format
         lgbm_params = hyperparams_data["optimal"]["lgbm_params"]
         optimal_threshold = hyperparams_data["optimal"]["optimal_threshold"]
+        best_cv_score = hyperparams_data["optimal"]["best_cv_score"]
     else:
         raise ValueError(
             f"Unrecognized hyperparams.json format. "
@@ -1126,6 +1128,7 @@ def evaluate_synthetic(
         )
 
     console.print(f"  ✓ Loaded hyperparameters")
+    console.print(f"  CV ROC-AUC: {best_cv_score:.4f}")
     console.print(f"  Optimal threshold: {optimal_threshold:.3f}")
 
     # Load and encode data (match dual-eval approach: fit on real training, transform others)
@@ -1173,6 +1176,30 @@ def evaluate_synthetic(
     console.print(f"  Samples: {len(X_test):,}")
     console.print(f"  Class balance: {np.mean(y_test == 1):.1%} positive")
 
+    # Display class imbalance comparison
+    real_pos_pct = np.mean(y_train == 1)
+    synth_pos_pct = np.mean(y_synthetic == 1)
+    imbalance_diff = synth_pos_pct - real_pos_pct
+    imbalance_ratio = synth_pos_pct / real_pos_pct if real_pos_pct > 0 else 0.0
+
+    console.print(f"\n[bold]Class Imbalance Comparison:[/bold]")
+    console.print(f"  Real training:      {real_pos_pct:.1%} positive")
+    console.print(f"  Synthetic training: {synth_pos_pct:.1%} positive")
+
+    # Color code based on severity
+    if abs(imbalance_diff) < 0.02:  # Within 2pp
+        color = "green"
+        status = "✓ Good match"
+    elif abs(imbalance_diff) < 0.05:  # Within 5pp
+        color = "yellow"
+        status = "⚠ Moderate difference"
+    else:  # >5pp difference
+        color = "red"
+        status = "✗ Large difference"
+
+    console.print(f"  Difference:         [{color}]{imbalance_diff:+.1%} ({status})[/{color}]")
+    console.print(f"  Ratio:              {imbalance_ratio:.2f}x")
+
     # Evaluate model performance (like dual-eval)
     console.print(f"\n[bold magenta]{'═' * 70}[/bold magenta]")
     console.print(f"[bold magenta]{'Model Performance Evaluation':^70}[/bold magenta]")
@@ -1189,7 +1216,7 @@ def evaluate_synthetic(
         threshold=optimal_threshold,
         seed=seed,
     )
-    display_test_evaluation("Real → Test", 0.0, real_metrics)
+    display_test_evaluation("Real → Test", best_cv_score, real_metrics)
 
     # Synthetic: Synthetic training → Real test
     console.print("\n[bold]Synthetic: Synthetic Training → Real Test[/bold]")
@@ -1202,7 +1229,7 @@ def evaluate_synthetic(
         threshold=optimal_threshold,
         seed=seed,
     )
-    display_test_evaluation("Synthetic → Test", 0.0, synth_metrics)
+    display_test_evaluation("Synthetic → Test", best_cv_score, synth_metrics)
 
     # Display comparison
     console.print(f"\n[bold cyan]Performance Gap (Real - Synthetic)[/bold cyan]")
