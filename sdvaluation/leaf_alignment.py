@@ -299,6 +299,7 @@ def run_leaf_alignment(
     params = lgbm_params.copy()
     params.pop('imbalance_method', None)
     params.pop('early_stopping_rounds', None)
+    params.pop('is_unbalance', None)  # Remove is_unbalance to avoid conflict with scale_pos_weight
     params['n_estimators'] = n_estimators
     params['verbose'] = -1  # Suppress output
 
