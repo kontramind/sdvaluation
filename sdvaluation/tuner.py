@@ -798,6 +798,7 @@ def tune_hyperparameters(
     optimize_threshold: bool = True,
     n_jobs: int = 1,
     random_state: int = 42,
+    show_progress: bool = False,
 ) -> Dict[str, Any]:
     """
     Tune LGBM hyperparameters and optionally find optimal threshold.
@@ -814,6 +815,7 @@ def tune_hyperparameters(
         optimize_threshold: Whether to find optimal threshold via CV
         n_jobs: Number of parallel jobs for LGBM
         random_state: Random seed
+        show_progress: Whether to show Optuna progress bar
 
     Returns:
         Dictionary containing best parameters, CV score, and optional threshold
@@ -828,7 +830,7 @@ def tune_hyperparameters(
         random_state=random_state,
     )
 
-    results = tuner.tune(show_progress=False)
+    results = tuner.tune(show_progress=show_progress)
     lgbm_params = results["best_params"]
 
     result = {
@@ -1253,6 +1255,7 @@ def evaluate_synthetic(
             optimize_threshold=True,
             n_jobs=n_jobs,
             random_state=seed,
+            show_progress=True,
         )
 
         synth_lgbm_params = synth_tuning_results["best_params"]
