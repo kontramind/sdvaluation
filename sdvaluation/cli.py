@@ -724,6 +724,16 @@ def evaluate_synthetic_data(
         "--output",
         help="Custom output path for CSV results (default: dseed_dir/synthetic_evaluation.csv)",
     ),
+    adjust_for_imbalance: bool = typer.Option(
+        False,
+        "--adjust-for-imbalance",
+        help="Level 2: Run dual evaluation (unadjusted + adjusted for class imbalance)",
+    ),
+    retune_on_synthetic: bool = typer.Option(
+        False,
+        "--retune-on-synthetic",
+        help="Level 3: Run full hyperparameter tuning on synthetic data for best-case comparison",
+    ),
 ) -> None:
     """
     Evaluate synthetic data quality using leaf alignment.
@@ -764,11 +774,32 @@ def evaluate_synthetic_data(
             --n-estimators 1000 \\
             --n-jobs -1
     """
+    # Validate mutually exclusive flags
+    if adjust_for_imbalance and retune_on_synthetic:
+        console.print(
+            "[bold red]Error:[/bold red] Cannot use both --adjust-for-imbalance and "
+            "--retune-on-synthetic at the same time.\n"
+            "Choose one:\n"
+            "  Level 1 (default): Unadjusted evaluation\n"
+            "  Level 2: --adjust-for-imbalance\n"
+            "  Level 3: --retune-on-synthetic"
+        )
+        raise typer.Exit(code=1)
+
     try:
         from .tuner import evaluate_synthetic
 
         console.print("\n" + "=" * 60)
         console.print("[bold cyan]Synthetic Data Evaluation - sdvaluation[/bold cyan]")
+
+        # Show evaluation level
+        if retune_on_synthetic:
+            console.print("[bold yellow]Level 3: Full Hyperparameter Retuning[/bold yellow]")
+        elif adjust_for_imbalance:
+            console.print("[bold yellow]Level 2: Adjusted for Class Imbalance[/bold yellow]")
+        else:
+            console.print("[bold yellow]Level 1: Unadjusted (Drop-in Replacement Test)[/bold yellow]")
+
         console.print("=" * 60)
 
         start_time = time.time()
@@ -781,6 +812,8 @@ def evaluate_synthetic_data(
             n_jobs=n_jobs,
             seed=seed,
             output_file=output,
+            adjust_for_imbalance=adjust_for_imbalance,
+            retune_on_synthetic=retune_on_synthetic,
         )
 
         # Display execution time
