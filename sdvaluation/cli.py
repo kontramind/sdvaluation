@@ -734,6 +734,22 @@ def evaluate_synthetic_data(
         "--retune-on-synthetic",
         help="Level 3: Run full hyperparameter tuning on synthetic data for best-case comparison",
     ),
+    retune_n_trials: int = typer.Option(
+        500,
+        "--retune-n-trials",
+        help="Number of Bayesian optimization trials for Level 3 retuning (default: 500)",
+        min=10,
+    ),
+    retune_optimize_metric: str = typer.Option(
+        "auroc",
+        "--retune-optimize-metric",
+        help="Metric to optimize during Level 3 hyperparameter search: auroc, pr_auc, f1, precision, recall",
+    ),
+    retune_threshold_metric: str = typer.Option(
+        "f1",
+        "--retune-threshold-metric",
+        help="Metric to optimize classification threshold in Level 3: f1, precision, recall, youden",
+    ),
 ) -> None:
     """
     Evaluate synthetic data quality using leaf alignment.
@@ -773,6 +789,24 @@ def evaluate_synthetic_data(
             --synthetic-file synth_10k.csv \\
             --n-estimators 1000 \\
             --n-jobs -1
+
+        # Level 3: Full retuning with custom metrics
+        $ sdvaluation eval \\
+            --dseed-dir dseed55/ \\
+            --synthetic-file synth_10k.csv \\
+            --retune-on-synthetic \\
+            --retune-optimize-metric pr_auc \\
+            --retune-threshold-metric recall \\
+            --retune-n-trials 1000
+
+        # Level 3: Match real tuning settings exactly
+        $ sdvaluation eval \\
+            --dseed-dir dseed55/ \\
+            --synthetic-file synth_10k.csv \\
+            --retune-on-synthetic \\
+            --retune-n-trials 500 \\
+            --retune-optimize-metric auroc \\
+            --retune-threshold-metric f1
     """
     # Validate mutually exclusive flags
     if adjust_for_imbalance and retune_on_synthetic:
@@ -785,6 +819,24 @@ def evaluate_synthetic_data(
             "  Level 3: --retune-on-synthetic"
         )
         raise typer.Exit(code=1)
+
+    # Validate Level 3 retuning metrics
+    if retune_on_synthetic:
+        valid_optimize_metrics = ["auroc", "pr_auc", "f1", "precision", "recall"]
+        if retune_optimize_metric not in valid_optimize_metrics:
+            console.print(
+                f"[bold red]Error:[/bold red] Invalid optimize metric '{retune_optimize_metric}'. "
+                f"Must be one of: {', '.join(valid_optimize_metrics)}"
+            )
+            raise typer.Exit(code=1)
+
+        valid_threshold_metrics = ["f1", "recall", "precision", "youden"]
+        if retune_threshold_metric not in valid_threshold_metrics:
+            console.print(
+                f"[bold red]Error:[/bold red] Invalid threshold metric '{retune_threshold_metric}'. "
+                f"Must be one of: {', '.join(valid_threshold_metrics)}"
+            )
+            raise typer.Exit(code=1)
 
     try:
         from .tuner import evaluate_synthetic
@@ -814,6 +866,9 @@ def evaluate_synthetic_data(
             output_file=output,
             adjust_for_imbalance=adjust_for_imbalance,
             retune_on_synthetic=retune_on_synthetic,
+            retune_n_trials=retune_n_trials,
+            retune_optimize_metric=retune_optimize_metric,
+            retune_threshold_metric=retune_threshold_metric,
         )
 
         # Display execution time
