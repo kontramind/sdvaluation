@@ -92,7 +92,7 @@ def data_valuation_mimic_iii(
         1,
         "-j",
         "--n-jobs",
-        help="Number of parallel jobs for computation (1=sequential, -1=all CPUs)",
+        help="Number of parallel jobs for Shapley value computation (1=sequential, -1=all CPUs)",
     ),
     lgbm_params_json: Optional[Path] = typer.Option(
         None,
@@ -231,12 +231,6 @@ def tune_hyperparameters(
         "--threshold-metric",
         help="Metric to optimize classification threshold: f1, precision, recall, youden",
     ),
-    n_jobs: int = typer.Option(
-        -1,
-        "-j",
-        "--n-jobs",
-        help="Number of parallel jobs (1=sequential, -1=all CPUs)",
-    ),
     seed: int = typer.Option(
         42,
         "-s",
@@ -295,10 +289,9 @@ def tune_hyperparameters(
             $ sdvaluation tune \\
                 --dseed-dir dseed6765/ \\
                 --n-trials 200 \\
-                --threshold-metric recall \\
-                --n-jobs 8
+                --threshold-metric recall
 
-        Batch process all dseeds:
+        Batch process all dseeds (for parallelization):
 
             $ for dseed in dseed*/; do \\
                 sdvaluation tune --dseed-dir $dseed; \\
@@ -335,7 +328,6 @@ def tune_hyperparameters(
             n_trials=n_trials,
             n_folds=n_folds,
             threshold_metric=threshold_metric,
-            n_jobs=n_jobs,
             seed=seed,
             output_name=output_name,
             optimize_metric=optimize_metric,
@@ -454,7 +446,8 @@ def dual_evaluation(
         1,
         "--n-jobs",
         "-j",
-        help="Number of parallel jobs (1=sequential, -1=all CPUs). Used for LGBM training and leaf alignment.",
+        help="Number of parallel jobs for leaf alignment computation (1=sequential, -1=all CPUs). "
+             "Note: Hyperparameter tuning always uses n_jobs=1 for reproducibility.",
     ),
     random_state: int = typer.Option(
         42,
@@ -573,7 +566,7 @@ def leaf_alignment_baseline(
         1,
         "-j",
         "--n-jobs",
-        help="Number of parallel jobs (1=sequential, -1=all CPUs)",
+        help="Number of parallel jobs for leaf alignment computation (1=sequential, -1=all CPUs)",
     ),
     random_state: int = typer.Option(
         42,
@@ -711,7 +704,8 @@ def evaluate_synthetic_data(
         1,
         "-j",
         "--n-jobs",
-        help="Number of parallel jobs (1=sequential, -1=all CPUs)",
+        help="Number of parallel jobs for leaf alignment computation (1=sequential, -1=all CPUs). "
+             "Note: Level 3 tuning always uses n_jobs=1 for reproducibility.",
     ),
     seed: int = typer.Option(
         42,

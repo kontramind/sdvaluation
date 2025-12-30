@@ -914,7 +914,6 @@ def tune_dual_scenario(
     n_trials: int = 100,
     n_folds: int = 5,
     threshold_metric: str = "f1",
-    n_jobs: int = -1,
     seed: int = 42,
     output_name: str = "hyperparams.json",
     optimize_metric: str = "auroc",
@@ -927,13 +926,15 @@ def tune_dual_scenario(
     2. Optimize classification threshold
     3. Evaluate on test data with confusion matrix
 
+    Note: Hyperparameter tuning always uses n_jobs=1 for reproducible results.
+    For parallelization, run multiple tune commands on different dseeds.
+
     Args:
         dseed_dir: Path to dseed directory
         target_column: Name of target column
         n_trials: Number of Optuna trials
         n_folds: Number of CV folds
         threshold_metric: Metric to optimize threshold (f1, recall, precision, youden)
-        n_jobs: Number of parallel jobs
         seed: Random seed
         output_name: Name of output JSON file
         optimize_metric: Metric to optimize during hyperparameter search ('auroc', 'pr_auc', 'f1', 'precision', 'recall')
@@ -983,7 +984,7 @@ def tune_dual_scenario(
         y_train,
         n_trials=n_trials,
         n_folds=n_folds,
-        n_jobs=n_jobs,
+        n_jobs=1,  # Always 1 for reproducible results
         seed=seed,
         optimize_metric=optimize_metric,
     )
