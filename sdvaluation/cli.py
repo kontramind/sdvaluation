@@ -231,12 +231,6 @@ def tune_hyperparameters(
         "--threshold-metric",
         help="Metric to optimize classification threshold: f1, precision, recall, youden",
     ),
-    n_jobs: int = typer.Option(
-        -1,
-        "-j",
-        "--n-jobs",
-        help="Number of parallel jobs (1=sequential, -1=all CPUs)",
-    ),
     seed: int = typer.Option(
         42,
         "-s",
@@ -295,10 +289,9 @@ def tune_hyperparameters(
             $ sdvaluation tune \\
                 --dseed-dir dseed6765/ \\
                 --n-trials 200 \\
-                --threshold-metric recall \\
-                --n-jobs 8
+                --threshold-metric recall
 
-        Batch process all dseeds:
+        Batch process all dseeds (for parallelization):
 
             $ for dseed in dseed*/; do \\
                 sdvaluation tune --dseed-dir $dseed; \\
@@ -335,7 +328,6 @@ def tune_hyperparameters(
             n_trials=n_trials,
             n_folds=n_folds,
             threshold_metric=threshold_metric,
-            n_jobs=n_jobs,
             seed=seed,
             output_name=output_name,
             optimize_metric=optimize_metric,
