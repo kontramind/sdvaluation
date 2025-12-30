@@ -796,6 +796,7 @@ def tune_hyperparameters(
     timeout: int = None,
     threshold_metric: Literal["f1", "precision", "recall", "youden"] = "f1",
     optimize_threshold: bool = True,
+    optimize_metric: str = "auroc",
     n_jobs: int = 1,
     random_state: int = 42,
 ) -> Dict[str, Any]:
@@ -812,6 +813,7 @@ def tune_hyperparameters(
         timeout: Timeout in seconds (unused, for API compatibility)
         threshold_metric: Metric to optimize threshold for
         optimize_threshold: Whether to find optimal threshold via CV
+        optimize_metric: Metric to optimize during hyperparameter search (auroc, pr_auc, f1, precision, recall)
         n_jobs: Number of parallel jobs for LGBM
         random_state: Random seed
 
@@ -826,6 +828,7 @@ def tune_hyperparameters(
         n_trials=n_trials,
         n_jobs=n_jobs,
         random_state=random_state,
+        optimize_metric=optimize_metric,
     )
 
     results = tuner.tune(show_progress=False)
@@ -1057,6 +1060,9 @@ def evaluate_synthetic(
     output_file: Optional[Path] = None,
     adjust_for_imbalance: bool = False,
     retune_on_synthetic: bool = False,
+    retune_n_trials: int = 500,
+    retune_optimize_metric: str = "auroc",
+    retune_threshold_metric: str = "f1",
 ) -> Dict[str, Any]:
     """
     Evaluate synthetic data quality using leaf alignment.
@@ -1080,6 +1086,11 @@ def evaluate_synthetic(
         n_jobs: Number of parallel jobs (1=sequential, -1=all CPUs)
         seed: Random seed
         output_file: Optional custom output path for CSV (default: dseed_dir/synthetic_evaluation.csv)
+        adjust_for_imbalance: Level 2 flag
+        retune_on_synthetic: Level 3 flag
+        retune_n_trials: Number of Bayesian trials for Level 3 (default: 500)
+        retune_optimize_metric: Metric to optimize in Level 3 (default: 'auroc')
+        retune_threshold_metric: Threshold metric for Level 3 (default: 'f1')
 
     Returns:
         Dictionary with evaluation results
@@ -1244,13 +1255,17 @@ def evaluate_synthetic(
 
         # Run full hyperparameter tuning on synthetic data
         console.print("[bold]Tuning hyperparameters on synthetic data...[/bold]")
+        console.print(f"  Trials: {retune_n_trials}")
+        console.print(f"  Optimize metric: {retune_optimize_metric}")
+        console.print(f"  Threshold metric: {retune_threshold_metric}")
         synth_tuning_results = tune_hyperparameters(
             X_train=X_synthetic,
             y_train=y_synthetic,
-            n_trials=500,
+            n_trials=retune_n_trials,
             n_folds=5,
-            threshold_metric="f1",
+            threshold_metric=retune_threshold_metric,
             optimize_threshold=True,
+            optimize_metric=retune_optimize_metric,
             n_jobs=n_jobs,
             random_state=seed,
         )
@@ -1260,7 +1275,8 @@ def evaluate_synthetic(
         synth_best_cv_score = synth_tuning_results["cv_score"]
 
         console.print(f"  ✓ Synthetic tuning complete")
-        console.print(f"  CV ROC-AUC: {synth_best_cv_score:.4f}")
+        metric_display = retune_optimize_metric.upper() if retune_optimize_metric != "pr_auc" else "PR-AUC"
+        console.print(f"  CV {metric_display}: {synth_best_cv_score:.4f}")
         console.print(f"  Optimal threshold: {synth_optimal_threshold:.3f}")
 
         # Display hyperparameter comparison table
@@ -1413,6 +1429,9 @@ def evaluate_synthetic(
                 "n_estimators": n_estimators,
                 "target_column": target_column,
                 "seed": seed,
+                "retune_n_trials": retune_n_trials,
+                "retune_optimize_metric": retune_optimize_metric,
+                "retune_threshold_metric": retune_threshold_metric,
             },
             "hyperparameter_comparison": {
                 "real_tuned": {
