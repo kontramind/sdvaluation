@@ -1270,7 +1270,7 @@ def evaluate_synthetic(
             threshold_metric=retune_threshold_metric,
             optimize_threshold=True,
             optimize_metric=retune_optimize_metric,
-            n_jobs=n_jobs,
+            n_jobs=1,  # Always 1 for reproducible results
             random_state=seed,
             show_progress=True,
         )
