@@ -442,13 +442,6 @@ def dual_evaluation(
         help="Number of trees for leaf alignment (more = tighter CIs, default: 500)",
         min=100,
     ),
-    n_jobs: int = typer.Option(
-        1,
-        "--n-jobs",
-        "-j",
-        help="Number of parallel jobs for leaf alignment computation (1=sequential, -1=all CPUs). "
-             "Note: Hyperparameter tuning always uses n_jobs=1 for reproducibility.",
-    ),
     random_state: int = typer.Option(
         42,
         "--seed",
@@ -526,7 +519,6 @@ def dual_evaluation(
             threshold_metric=threshold_metric,
             run_leaf_alignment=not no_leaf_alignment,
             leaf_n_estimators=leaf_n_estimators,
-            n_jobs=n_jobs,
             random_state=random_state,
         )
 
@@ -561,12 +553,6 @@ def leaf_alignment_baseline(
         "--n-estimators",
         help="Number of trees for leaf alignment (more = tighter CIs)",
         min=100,
-    ),
-    n_jobs: int = typer.Option(
-        1,
-        "-j",
-        "--n-jobs",
-        help="Number of parallel jobs for leaf alignment computation (1=sequential, -1=all CPUs)",
     ),
     random_state: int = typer.Option(
         42,
@@ -637,7 +623,6 @@ def leaf_alignment_baseline(
         $ sdvaluation leaf-alignment \\
             --dseed-dir dseed6765/ \\
             --n-estimators 1000 \\
-            --n-jobs -1 \\
             --cross-test
     """
     try:
@@ -651,7 +636,6 @@ def leaf_alignment_baseline(
             dseed_dir=dseed_dir,
             target_column=target_column,
             n_estimators=n_estimators,
-            n_jobs=n_jobs,
             random_state=random_state,
             cross_test=cross_test,
         )
@@ -699,13 +683,6 @@ def evaluate_synthetic_data(
         "--n-estimators",
         min=100,
         help="Number of trees for leaf alignment (more = tighter confidence intervals)",
-    ),
-    n_jobs: int = typer.Option(
-        1,
-        "-j",
-        "--n-jobs",
-        help="Number of parallel jobs for leaf alignment computation (1=sequential, -1=all CPUs). "
-             "Note: Level 3 tuning always uses n_jobs=1 for reproducibility.",
     ),
     seed: int = typer.Option(
         42,
@@ -781,8 +758,7 @@ def evaluate_synthetic_data(
         $ sdvaluation eval \\
             --dseed-dir dseed55/ \\
             --synthetic-file synth_10k.csv \\
-            --n-estimators 1000 \\
-            --n-jobs -1
+            --n-estimators 1000
 
         # Level 3: Full retuning with custom metrics
         $ sdvaluation eval \\
@@ -793,14 +769,13 @@ def evaluate_synthetic_data(
             --retune-threshold-metric recall \\
             --retune-n-trials 1000
 
-        # Level 3: Match real tuning settings exactly
-        $ sdvaluation eval \\
-            --dseed-dir dseed55/ \\
-            --synthetic-file synth_10k.csv \\
-            --retune-on-synthetic \\
-            --retune-n-trials 500 \\
-            --retune-optimize-metric auroc \\
-            --retune-threshold-metric f1
+        # Parallelize across multiple generations
+        $ for gen in {0..19}; do \\
+            sdvaluation eval \\
+              --dseed-dir dseed55/ \\
+              --synthetic-file synth_gen_${gen}.csv \\
+              --output eval_gen_${gen}.csv & \\
+          done && wait
     """
     # Validate mutually exclusive flags
     if adjust_for_imbalance and retune_on_synthetic:
@@ -855,7 +830,6 @@ def evaluate_synthetic_data(
             synthetic_file=synthetic_file,
             target_column=target_column,
             n_estimators=n_estimators,
-            n_jobs=n_jobs,
             seed=seed,
             output_file=output,
             adjust_for_imbalance=adjust_for_imbalance,

@@ -1058,7 +1058,6 @@ def evaluate_synthetic(
     synthetic_file: Path,
     target_column: str = "READMIT",
     n_estimators: int = 500,
-    n_jobs: int = 1,
     seed: int = 42,
     output_file: Optional[Path] = None,
     adjust_for_imbalance: bool = False,
@@ -1373,7 +1372,7 @@ def evaluate_synthetic(
             lgbm_params=synth_lgbm_params,
             output_file=output_file,
             n_estimators=n_estimators,
-            n_jobs=n_jobs,
+            n_jobs=1,  # Always 1 for reproducible results
             random_state=seed,
         )
 
@@ -1570,7 +1569,7 @@ def evaluate_synthetic(
             lgbm_params=synth_params_adjusted,
             output_file=output_file,
             n_estimators=n_estimators,
-            n_jobs=n_jobs,
+            n_jobs=1,  # Always 1 for reproducible results
             random_state=seed,
         )
 
@@ -1711,7 +1710,7 @@ def evaluate_synthetic(
             lgbm_params=lgbm_params,
             output_file=output_file,
             n_estimators=n_estimators,
-            n_jobs=n_jobs,
+            n_jobs=1,  # Always 1 for reproducible results
             random_state=seed,
         )
 
@@ -1800,7 +1799,6 @@ def run_leaf_alignment_baseline(
     dseed_dir: Path,
     target_column: str = "READMIT",
     n_estimators: int = 500,
-    n_jobs: int = 1,
     random_state: int = 42,
     cross_test: bool = False,
 ) -> Dict[str, Any]:
@@ -1811,11 +1809,12 @@ def run_leaf_alignment_baseline(
     leaf co-occurrence analysis. Runs both deployment and optimal scenarios.
     Optionally runs cross-test scenarios for decomposition analysis.
 
+    Note: Always uses n_jobs=1 for reproducible results.
+
     Args:
         dseed_dir: Path to dseed directory
         target_column: Name of target column
         n_estimators: Number of trees for leaf alignment
-        n_jobs: Number of parallel jobs
         random_state: Random seed
         cross_test: If True, also run cross-test scenarios (unsampled+optimal, training+deployment)
 
@@ -1896,7 +1895,7 @@ def run_leaf_alignment_baseline(
         lgbm_params=deployment_params,
         output_file=deployment_output,
         n_estimators=n_estimators,
-        n_jobs=n_jobs,
+        n_jobs=1,  # Always 1 for reproducible results
         random_state=random_state,
     )
 
@@ -1934,7 +1933,7 @@ def run_leaf_alignment_baseline(
         lgbm_params=optimal_params,
         output_file=optimal_output,
         n_estimators=n_estimators,
-        n_jobs=n_jobs,
+        n_jobs=1,  # Always 1 for reproducible results
         random_state=random_state,
     )
 
@@ -1980,7 +1979,7 @@ def run_leaf_alignment_baseline(
             lgbm_params=optimal_params,  # Using optimal params
             output_file=cross_a_output,
             n_estimators=n_estimators,
-            n_jobs=n_jobs,
+            n_jobs=1,  # Always 1 for reproducible results
             random_state=random_state,
         )
 
@@ -2018,7 +2017,7 @@ def run_leaf_alignment_baseline(
             lgbm_params=deployment_params,  # Using deployment params
             output_file=cross_b_output,
             n_estimators=n_estimators,
-            n_jobs=n_jobs,
+            n_jobs=1,  # Always 1 for reproducible results
             random_state=random_state,
         )
 
