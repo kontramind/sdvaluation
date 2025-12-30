@@ -190,7 +190,9 @@ class LGBMTuner:
             y_train: Training labels (binary)
             n_folds: Number of cross-validation folds
             n_trials: Number of Bayesian optimization trials
-            n_jobs: Number of parallel jobs for LGBM (1=sequential, -1=all CPUs)
+            n_jobs: Stored for reference but hyperparameter search always uses n_jobs=1
+                    to ensure reproducible results. Parallelization in LightGBM causes
+                    non-determinism even with fixed random_state.
             random_state: Random seed for reproducibility
             optimize_metric: Metric to optimize ('auroc', 'pr_auc', 'f1', 'precision', 'recall')
         """
@@ -252,7 +254,7 @@ class LGBMTuner:
             "min_child_samples": trial.suggest_int("min_child_samples", 5, 60),  # Min 5
             "n_estimators": 1000,  # Large number, will use early stopping
             "random_state": self.random_state,
-            "n_jobs": self.n_jobs,
+            "n_jobs": 1,  # Force reproducible tuning (n_jobs > 1 causes non-determinism)
         }
 
         # Regularization with mandatory minimum for small datasets

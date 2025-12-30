@@ -194,7 +194,7 @@ def compute_utility_scores(
         # Sequential execution
         utility_per_tree_list = []
         for tree_k in range(n_trees):
-            if tree_k % 20 == 0:
+            if tree_k % 1000 == 0:
                 console.print(f"  Processing tree {tree_k}/{n_trees}...")
 
             utility_scores = process_single_tree(
