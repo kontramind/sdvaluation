@@ -370,7 +370,6 @@ def run_dual_evaluation(
     threshold_metric: str = 'f1',
     run_leaf_alignment: bool = True,
     leaf_n_estimators: int = 500,
-    n_jobs: int = 1,
     random_state: int = 42,
 ) -> Dict[str, Any]:
     """
@@ -378,6 +377,9 @@ def run_dual_evaluation(
 
     Scenario 1 (Optimal): Hyperparameters tuned on real_train (10k)
     Scenario 2 (Deployment): Hyperparameters tuned on tuning_data (40k)
+
+    Note: All computations use n_jobs=1 for reproducible results.
+    For parallelization, run multiple evaluations concurrently.
 
     Args:
         tuning_data: Path to 40k population data for hyperparameter tuning
@@ -392,7 +394,6 @@ def run_dual_evaluation(
         threshold_metric: Metric to optimize threshold ('f1', 'precision', 'recall', 'youden')
         run_leaf_alignment: Whether to run leaf alignment analysis
         leaf_n_estimators: Number of trees for leaf alignment (more = tighter CIs)
-        n_jobs: Number of parallel jobs (1=sequential, -1=all CPUs)
         random_state: Random seed
 
     Returns:
@@ -465,7 +466,7 @@ def run_dual_evaluation(
         n_folds=n_folds,
         threshold_metric=threshold_metric,
         optimize_threshold=True,
-        n_jobs=n_jobs,
+        n_jobs=1,  # Always 1 for reproducible results
         random_state=random_state
     )
     params_40k = result_40k['best_params']
@@ -497,7 +498,7 @@ def run_dual_evaluation(
         n_folds=n_folds,
         threshold_metric=threshold_metric,
         optimize_threshold=True,
-        n_jobs=n_jobs,
+        n_jobs=1,  # Always 1 for reproducible results
         random_state=random_state
     )
     params_10k = result_10k['best_params']
@@ -638,7 +639,7 @@ def run_dual_evaluation(
             params_10k,
             output_file=leaf_10k_file,
             n_estimators=leaf_n_estimators,
-            n_jobs=n_jobs,
+            n_jobs=1,  # Always 1 for reproducible results
             random_state=random_state
         )
         console.print(f"  [green]✓ Saved: {leaf_10k_file.name}[/green]")
@@ -653,7 +654,7 @@ def run_dual_evaluation(
             params_40k,
             output_file=leaf_40k_file,
             n_estimators=leaf_n_estimators,
-            n_jobs=n_jobs,
+            n_jobs=1,  # Always 1 for reproducible results
             random_state=random_state
         )
         console.print(f"  [green]✓ Saved: {leaf_40k_file.name}[/green]")
