@@ -1258,6 +1258,95 @@ def evaluate_synthetic(
         output_file = Path(output_file)
 
     # ═══════════════════════════════════════════════════════════════════════
+    # EARLY CHECK: Single-class synthetic data (affects ALL levels)
+    # ═══════════════════════════════════════════════════════════════════════
+    n_pos_synth = np.sum(y_synthetic == 1)
+    n_neg_synth = np.sum(y_synthetic == 0)
+
+    if n_pos_synth == 0 or n_neg_synth == 0:
+        # Single-class data cannot be used for leaf alignment at any level
+        # Return early with clear failure status
+
+        level_num = 3 if retune_on_synthetic else (2 if adjust_for_imbalance else 1)
+        level_name = "Level 3 (Retune)" if retune_on_synthetic else ("Level 2 (Adjusted)" if adjust_for_imbalance else "Level 1 (Unadjusted)")
+
+        console.print("\n[bold red]" + "═" * 70 + "[/bold red]")
+        console.print("[bold red]" + "ERROR: EVALUATION FAILED - SINGLE-CLASS SYNTHETIC DATA".center(70) + "[/bold red]")
+        console.print("[bold red]" + "═" * 70 + "[/bold red]\n")
+
+        # Report class distribution
+        if n_pos_synth == 0:
+            console.print("[red]✗ Synthetic data has 0% positive class (0 samples)[/red]")
+            console.print(f"[red]  Total samples: {len(y_synthetic):,} (all negative)[/red]")
+        else:
+            console.print("[red]✗ Synthetic data has 0% negative class (0 samples)[/red]")
+            console.print(f"[red]  Total samples: {len(y_synthetic):,} (all positive)[/red]")
+
+        # Explain why evaluation cannot proceed
+        console.print(f"\n[bold yellow]Why {level_name} evaluation failed:[/bold yellow]")
+        console.print("[yellow]  • LGBM cannot train a binary classifier with only one class[/yellow]")
+        console.print("[yellow]  • Leaf alignment requires training on synthetic to measure utility[/yellow]")
+        console.print("[yellow]  • Cannot determine if points are beneficial or harmful[/yellow]")
+
+        # Provide guidance
+        console.print("\n[bold cyan]Recommended actions:[/bold cyan]")
+        console.print("[cyan]  1. Check synthetic data generation process[/cyan]")
+        console.print("[cyan]  2. Regenerate synthetic data with both classes present[/cyan]")
+        console.print("[cyan]  3. Verify class balance in generation config[/cyan]")
+        console.print("[cyan]  4. Consider conditional generation to preserve class distribution[/cyan]")
+
+        # Display what was evaluated
+        console.print(f"\n[bold magenta]{'═' * 70}[/bold magenta]")
+        console.print(f"[bold magenta]{'What Was Evaluated (Before Failure)':^70}[/bold magenta]")
+        console.print(f"[bold magenta]{'═' * 70}[/bold magenta]\n")
+
+        console.print("[bold]Real Training → Real Test (Baseline)[/bold]")
+        console.print(f"  AUROC:     {real_metrics['auroc']:.4f}")
+        console.print(f"  F1:        {real_metrics['f1']:.4f}")
+        console.print(f"  Precision: {real_metrics['precision']:.4f}")
+        console.print(f"  Recall:    {real_metrics['recall']:.4f}")
+
+        # Final summary
+        console.print(f"\n[bold red]{'═' * 70}[/bold red]")
+        console.print(f"[bold red]{'EVALUATION STATUS: FAILED (UNEVALUABLE)':^70}[/bold red]")
+        console.print(f"[bold red]{'═' * 70}[/bold red]\n")
+
+        console.print("[bold]Output:[/bold]")
+        console.print(f"  • No CSV file created (evaluation incomplete)")
+        console.print(f"  • JSON result marked as evaluable=false")
+        console.print(f"  • Reason: single_class_synthetic_data\n")
+
+        # Return clean unevaluable status
+        return {
+            'level': level_num,
+            'evaluable': False,
+            'failure_reason': 'single_class_synthetic_data',
+            'synthetic_size': len(y_synthetic),
+            'class_distribution': {
+                'n_positive': int(n_pos_synth),
+                'n_negative': int(n_neg_synth),
+                'pct_positive': float(100 * n_pos_synth / len(y_synthetic)) if len(y_synthetic) > 0 else 0.0,
+            },
+            'real_metrics': real_metrics,
+            'synth_metrics': None,
+            'synth_tuning_results': None if retune_on_synthetic else None,
+            'leaf_alignment': {
+                'evaluable': False,
+                'reason': 'single_class_requires_both_classes_for_training',
+                'n_total': len(y_synthetic),
+                'n_hallucinated': None,
+                'n_beneficial': None,
+                'n_uncertain': None,
+                'pct_hallucinated': None,
+                'pct_beneficial': None,
+                'pct_uncertain': None,
+                'mean_utility': None,
+                'median_utility': None,
+            },
+            'output_file': None,
+        }
+
+    # ═══════════════════════════════════════════════════════════════════════
     # THREE-LEVEL EVALUATION BRANCHING
     # ═══════════════════════════════════════════════════════════════════════
 
@@ -1269,128 +1358,8 @@ def evaluate_synthetic(
         console.print("[dim]This evaluates best-case performance with synthetic data (~80s)[/dim]\n")
 
         # ═══════════════════════════════════════════════════════════════════
-        # VALIDATION: Check for single-class synthetic data
-        # ═══════════════════════════════════════════════════════════════════
-        n_pos_synth = np.sum(y_synthetic == 1)
-        n_neg_synth = np.sum(y_synthetic == 0)
-
-        if n_pos_synth == 0 or n_neg_synth == 0:
-            console.print("[bold red]╔══════════════════════════════════════════════════════════════════╗[/bold red]")
-            console.print("[bold red]║  ERROR: Cannot run Level 3 - Single-class synthetic data        ║[/bold red]")
-            console.print("[bold red]╚══════════════════════════════════════════════════════════════════╝[/bold red]\n")
-
-            if n_pos_synth == 0:
-                console.print("[red]Synthetic data has 0% positive class (0 samples).[/red]")
-            else:
-                console.print("[red]Synthetic data has 0% negative class (0 samples).[/red]")
-
-            console.print("\n[yellow]Level 3 requires both classes for hyperparameter tuning.[/yellow]")
-            console.print("[yellow]LGBM cannot train a binary classifier with only one class.[/yellow]")
-
-            console.print("\n[bold cyan]Falling back to Level 1 evaluation...[/bold cyan]")
-            console.print("[dim]Using hyperparameters tuned on real training data[/dim]\n")
-
-            # Fall back to Level 1: use real data hyperparameters
-            console.print("[bold]Synthetic: Synthetic Training → Real Test (Real-Tuned Params)[/bold]")
-            synth_metrics = evaluate_on_test(
-                params=lgbm_params,
-                X_train=X_synthetic,
-                y_train=y_synthetic,
-                X_test=X_test,
-                y_test=y_test,
-                threshold=optimal_threshold,
-                seed=seed,
-            )
-            display_test_evaluation("Synthetic → Test", best_cv_score, synth_metrics)
-
-            # Display performance gap
-            console.print(f"\n[bold cyan]Performance Gap (Real - Synthetic)[/bold cyan]")
-            console.print(f"    AUROC Gap:     {real_metrics['auroc'] - synth_metrics['auroc']:+.4f}")
-            console.print(f"    F1 Gap:        {real_metrics['f1'] - synth_metrics['f1']:+.4f}")
-            console.print(f"    Precision Gap: {real_metrics['precision'] - synth_metrics['precision']:+.4f}")
-            console.print(f"    Recall Gap:    {real_metrics['recall'] - synth_metrics['recall']:+.4f}")
-
-            # Run leaf alignment with real-tuned params (Level 1 behavior)
-            console.print(f"\n[bold green]{'═' * 70}[/bold green]")
-            console.print(f"[bold green]{'Leaf Alignment Analysis (Level 1 Fallback)':^70}[/bold green]")
-            console.print(f"[bold green]{'═' * 70}[/bold green]\n")
-            console.print(f"  Training on: Synthetic data ({len(X_synthetic):,} samples)")
-            console.print(f"  Testing on: Real test data ({len(X_test):,} samples)")
-            console.print(f"  Using: Hyperparameters tuned on real training data")
-
-            console.print("\n[yellow]⚠ WARNING: Results may be unreliable due to single-class data[/yellow]")
-            console.print("[yellow]  - Leaf alignment requires class diversity to measure utility[/yellow]")
-            console.print("[yellow]  - Consider regenerating synthetic data with balanced classes[/yellow]\n")
-
-            leaf_results = run_leaf_alignment(
-                X_synthetic=X_synthetic,
-                y_synthetic=y_synthetic,
-                X_real_test=X_test,
-                y_real_test=y_test,
-                lgbm_params=lgbm_params,
-                output_file=output_file,
-                n_estimators=n_estimators,
-                n_jobs=1,
-                random_state=seed,
-            )
-
-            # Display summary
-            console.print(f"\n[bold cyan]{'═' * 70}[/bold cyan]")
-            console.print(f"[bold cyan]{'Synthetic Data Evaluation Summary (Level 1 Fallback)':^70}[/bold cyan]")
-            console.print(f"[bold cyan]{'═' * 70}[/bold cyan]\n")
-
-            from rich.table import Table
-            summary_table = Table(show_header=True, header_style="bold magenta")
-            summary_table.add_column("Metric", style="cyan", width=30)
-            summary_table.add_column("Value", justify="right", width=20)
-            summary_table.add_column("Percentage", justify="right", width=15)
-
-            total_points = leaf_results["n_total"]
-            summary_table.add_row("Total synthetic points", f"{total_points:,}", "100.0%")
-            summary_table.add_row(
-                "[green]Beneficial points[/green]",
-                f"{leaf_results['n_beneficial']:,}",
-                f"{leaf_results['pct_beneficial']:.1f}%",
-            )
-            summary_table.add_row(
-                "[red]Hallucinated points[/red]",
-                f"{leaf_results['n_hallucinated']:,}",
-                f"{leaf_results['pct_hallucinated']:.1f}%",
-            )
-            summary_table.add_row(
-                "Uncertain points",
-                f"{leaf_results['n_uncertain']:,}",
-                f"{leaf_results['pct_uncertain']:.1f}%",
-            )
-            summary_table.add_row("", "", "")
-            summary_table.add_row(
-                "Mean utility score",
-                f"{leaf_results['mean_utility']:.6f}",
-                "—",
-            )
-            summary_table.add_row(
-                "Median utility score",
-                f"{leaf_results['median_utility']:.6f}",
-                "—",
-            )
-
-            console.print(summary_table)
-            console.print()
-
-            # Return early with Level 1 results
-            return {
-                'level': 1,  # Fallback level
-                'fallback_reason': 'single_class_synthetic_data',
-                'n_pos_synth': int(n_pos_synth),
-                'n_neg_synth': int(n_neg_synth),
-                'real_metrics': real_metrics,
-                'synth_metrics': synth_metrics,
-                'leaf_alignment': leaf_results,
-                'output_file': str(output_file),
-            }
-
-        # ═══════════════════════════════════════════════════════════════════
         # WARNING: Check for severely imbalanced synthetic data
+        # (Single-class already caught by early check above)
         # ═══════════════════════════════════════════════════════════════════
         min_class_pct = min(n_pos_synth, n_neg_synth) / len(y_synthetic)
         if min_class_pct < 0.005:  # Less than 0.5% of one class
