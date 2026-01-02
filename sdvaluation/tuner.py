@@ -373,9 +373,20 @@ class LGBMTuner:
         Returns:
             Dictionary with best_params and best_cv_score
         """
-        # Compute class imbalance for reporting
+        # Validate class distribution
         n_pos = np.sum(self.y_train == 1)
         n_neg = np.sum(self.y_train == 0)
+
+        if n_pos == 0 or n_neg == 0:
+            error_msg = (
+                "Cannot tune LGBM hyperparameters with single-class data.\n"
+                f"  Positive samples: {n_pos:,}\n"
+                f"  Negative samples: {n_neg:,}\n"
+                "Binary classification requires both classes for training."
+            )
+            console.print(f"[bold red]ERROR: {error_msg}[/bold red]")
+            raise ValueError(error_msg)
+
         scale_pos_weight = n_neg / n_pos if n_pos > 0 else 1.0
 
         console.print(f"  Class distribution: {n_pos:,} positive, {n_neg:,} negative")
@@ -1247,6 +1258,95 @@ def evaluate_synthetic(
         output_file = Path(output_file)
 
     # ═══════════════════════════════════════════════════════════════════════
+    # EARLY CHECK: Single-class synthetic data (affects ALL levels)
+    # ═══════════════════════════════════════════════════════════════════════
+    n_pos_synth = np.sum(y_synthetic == 1)
+    n_neg_synth = np.sum(y_synthetic == 0)
+
+    if n_pos_synth == 0 or n_neg_synth == 0:
+        # Single-class data cannot be used for leaf alignment at any level
+        # Return early with clear failure status
+
+        level_num = 3 if retune_on_synthetic else (2 if adjust_for_imbalance else 1)
+        level_name = "Level 3 (Retune)" if retune_on_synthetic else ("Level 2 (Adjusted)" if adjust_for_imbalance else "Level 1 (Unadjusted)")
+
+        console.print("\n[bold red]" + "═" * 70 + "[/bold red]")
+        console.print("[bold red]" + "ERROR: EVALUATION FAILED - SINGLE-CLASS SYNTHETIC DATA".center(70) + "[/bold red]")
+        console.print("[bold red]" + "═" * 70 + "[/bold red]\n")
+
+        # Report class distribution
+        if n_pos_synth == 0:
+            console.print("[red]✗ Synthetic data has 0% positive class (0 samples)[/red]")
+            console.print(f"[red]  Total samples: {len(y_synthetic):,} (all negative)[/red]")
+        else:
+            console.print("[red]✗ Synthetic data has 0% negative class (0 samples)[/red]")
+            console.print(f"[red]  Total samples: {len(y_synthetic):,} (all positive)[/red]")
+
+        # Explain why evaluation cannot proceed
+        console.print(f"\n[bold yellow]Why {level_name} evaluation failed:[/bold yellow]")
+        console.print("[yellow]  • LGBM cannot train a binary classifier with only one class[/yellow]")
+        console.print("[yellow]  • Leaf alignment requires training on synthetic to measure utility[/yellow]")
+        console.print("[yellow]  • Cannot determine if points are beneficial or harmful[/yellow]")
+
+        # Provide guidance
+        console.print("\n[bold cyan]Recommended actions:[/bold cyan]")
+        console.print("[cyan]  1. Check synthetic data generation process[/cyan]")
+        console.print("[cyan]  2. Regenerate synthetic data with both classes present[/cyan]")
+        console.print("[cyan]  3. Verify class balance in generation config[/cyan]")
+        console.print("[cyan]  4. Consider conditional generation to preserve class distribution[/cyan]")
+
+        # Display what was evaluated
+        console.print(f"\n[bold magenta]{'═' * 70}[/bold magenta]")
+        console.print(f"[bold magenta]{'What Was Evaluated (Before Failure)':^70}[/bold magenta]")
+        console.print(f"[bold magenta]{'═' * 70}[/bold magenta]\n")
+
+        console.print("[bold]Real Training → Real Test (Baseline)[/bold]")
+        console.print(f"  AUROC:     {real_metrics['auroc']:.4f}")
+        console.print(f"  F1:        {real_metrics['f1']:.4f}")
+        console.print(f"  Precision: {real_metrics['precision']:.4f}")
+        console.print(f"  Recall:    {real_metrics['recall']:.4f}")
+
+        # Final summary
+        console.print(f"\n[bold red]{'═' * 70}[/bold red]")
+        console.print(f"[bold red]{'EVALUATION STATUS: FAILED (UNEVALUABLE)':^70}[/bold red]")
+        console.print(f"[bold red]{'═' * 70}[/bold red]\n")
+
+        console.print("[bold]Output:[/bold]")
+        console.print(f"  • No CSV file created (evaluation incomplete)")
+        console.print(f"  • JSON result marked as evaluable=false")
+        console.print(f"  • Reason: single_class_synthetic_data\n")
+
+        # Return clean unevaluable status
+        return {
+            'level': level_num,
+            'evaluable': False,
+            'failure_reason': 'single_class_synthetic_data',
+            'synthetic_size': len(y_synthetic),
+            'class_distribution': {
+                'n_positive': int(n_pos_synth),
+                'n_negative': int(n_neg_synth),
+                'pct_positive': float(100 * n_pos_synth / len(y_synthetic)) if len(y_synthetic) > 0 else 0.0,
+            },
+            'real_metrics': real_metrics,
+            'synth_metrics': None,
+            'synth_tuning_results': None if retune_on_synthetic else None,
+            'leaf_alignment': {
+                'evaluable': False,
+                'reason': 'single_class_requires_both_classes_for_training',
+                'n_total': len(y_synthetic),
+                'n_hallucinated': None,
+                'n_beneficial': None,
+                'n_uncertain': None,
+                'pct_hallucinated': None,
+                'pct_beneficial': None,
+                'pct_uncertain': None,
+                'mean_utility': None,
+                'median_utility': None,
+            },
+            'output_file': None,
+        }
+
+    # ═══════════════════════════════════════════════════════════════════════
     # THREE-LEVEL EVALUATION BRANCHING
     # ═══════════════════════════════════════════════════════════════════════
 
@@ -1256,6 +1356,19 @@ def evaluate_synthetic(
         # ═══════════════════════════════════════════════════════════════════
         console.print("\n[bold yellow]Running Level 3: Full Hyperparameter Retuning on Synthetic Data[/bold yellow]")
         console.print("[dim]This evaluates best-case performance with synthetic data (~80s)[/dim]\n")
+
+        # ═══════════════════════════════════════════════════════════════════
+        # WARNING: Check for severely imbalanced synthetic data
+        # (Single-class already caught by early check above)
+        # ═══════════════════════════════════════════════════════════════════
+        min_class_pct = min(n_pos_synth, n_neg_synth) / len(y_synthetic)
+        if min_class_pct < 0.005:  # Less than 0.5% of one class
+            min_class_count = min(n_pos_synth, n_neg_synth)
+            class_name = "positive" if n_pos_synth < n_neg_synth else "negative"
+            console.print(f"\n[bold yellow]⚠ WARNING: Severely imbalanced synthetic data[/bold yellow]")
+            console.print(f"[yellow]  Only {min_class_count} {class_name} samples ({min_class_pct:.2%} of data)[/yellow]")
+            console.print(f"[yellow]  Level 3 tuning may be unreliable with extreme class imbalance[/yellow]")
+            console.print(f"[yellow]  Consider regenerating synthetic data with better class balance[/yellow]\n")
 
         # Run full hyperparameter tuning on synthetic data
         console.print("[bold]Tuning hyperparameters on synthetic data...[/bold]")
