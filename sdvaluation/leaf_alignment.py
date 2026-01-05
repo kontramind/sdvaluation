@@ -294,6 +294,26 @@ def run_leaf_alignment(
 
     Returns:
         Dictionary with summary statistics
+
+    TODO: ENHANCEMENT - Automatic Baseline Comparison
+        Consider adding optional X_real_train, y_real_train parameters to automatically
+        compute baseline statistics from real training data. This would enable side-by-side
+        comparison without requiring manual dual runs.
+
+        Benefits:
+          - Automated ratio metrics (e.g., "373× more hallucinated than baseline")
+          - Clearer quality assessment context
+          - No manual CSV comparison needed
+
+        See ENHANCEMENTS.md #1 for detailed design.
+
+    TODO: ENHANCEMENT - Marginal Point Classification
+        Current three-way classification (harmful/uncertain/beneficial) treats all
+        "reliably beneficial" points equally, even when some have negligible utility
+        (e.g., mean=+0.0008 vs mean=+0.0612). Consider adding five-tier classification
+        to distinguish strong vs marginal contributions.
+
+        See ENHANCEMENTS.md #2 for threshold selection methods.
     """
     # Prepare parameters
     params = lgbm_params.copy()
@@ -356,6 +376,9 @@ def run_leaf_alignment(
     mean, se, ci_lower, ci_upper = compute_confidence_intervals(utility_per_tree)
 
     # Identify reliably hallucinated points
+    # NOTE: This is a three-way classification (harmful/uncertain/beneficial)
+    # For production use, consider implementing five-tier classification to distinguish
+    # strong vs marginal contributions. See ENHANCEMENTS.md #2 for details.
     reliably_hallucinated = ci_upper < 0
     n_hallucinated = np.sum(reliably_hallucinated)
     reliably_beneficial = ci_lower > 0
