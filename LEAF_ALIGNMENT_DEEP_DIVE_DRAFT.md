@@ -2777,3 +2777,604 @@ Why 50×?
 
 Section 7 compares Leaf Alignment with other evaluation methods (Data Shapley, confusion matrices, distribution metrics).
 
+---
+
+## Section 7: Comparisons with Other Methods
+
+This section explores how Leaf Alignment differs from and complements other synthetic data evaluation methods.
+
+### 7.1 Leaf Alignment vs Data Shapley
+
+Both methods evaluate data quality, but they answer fundamentally different questions.
+
+#### Quick Recap: What Each Method Does
+
+**Data Shapley** (Original Method):
+
+**Question**: "What is the marginal contribution of each training point when added to random subsets of other training points?"
+
+**Process**:
+1. For each training point, sample random coalitions (subsets) of other points
+2. Train model on coalition WITHOUT the point → measure performance
+3. Train model on coalition WITH the point → measure performance
+4. Marginal contribution = performance difference
+5. Average across many random coalitions
+
+**Output**: Shapley value (positive = helpful, negative = harmful)
+
+---
+
+**Leaf Alignment** (This Method):
+
+**Question**: "Do the decision boundaries learned from synthetic data generalize to real test data patterns?"
+
+**Process**:
+1. Train ONE model on ALL synthetic data
+2. Pass synthetic training + real test data through the model
+3. For each leaf: check if it correctly classifies real test data
+4. Assign utility to synthetic points based on their leaves
+5. Aggregate across 500 trees for statistical confidence
+
+**Output**: Utility score (positive = beneficial, negative = harmful)
+
+#### Key Differences
+
+##### Difference 1: What They Measure
+
+**Data Shapley**:
+- **Measures**: Individual point quality in RANDOM SUBSETS
+- **Focus**: Marginal contribution
+- **Context**: "How much does this point help when combined with others?"
+
+Example: Point A might be:
+- Helpful when combined with points {B, C, D}
+- Harmful when combined with points {E, F, G}
+- → Shapley value = average across all combinations
+
+**Leaf Alignment**:
+- **Measures**: Structural quality on FULL DATASET
+- **Focus**: Decision boundary alignment
+- **Context**: "Does this point create boundaries that work on real data?"
+
+Example: Point A creates a leaf that:
+- Predicts Class 1
+- Real patients land there with label 0
+- → Utility = negative (misaligned)
+
+##### Difference 2: Training Approach
+
+**Data Shapley**:
+```
+Training: O(num_samples × n) model training runs
+          ~100 samples × 10,000 points = 1,000,000 models
+
+Runtime:  ~90 minutes (slow!)
+
+Type:     COUNTERFACTUAL
+          "What if we remove this point?"
+```
+
+**Leaf Alignment**:
+```
+Training: O(1) = ONE model training run
+
+Runtime:  ~5 minutes (fast!)
+
+Type:     EVALUATION
+          "Given that we trained on this, does it work?"
+```
+
+##### Difference 3: What They Detect
+
+**Data Shapley**:
+
+Detects:
+- ✓ Duplicate points (no marginal value)
+- ✓ Outliers (hurt when added to subsets)
+- ✓ Points that conflict with others
+- ✓ Individual point quality
+
+Misses:
+- ✗ Distributional issues (collective patterns)
+- ✗ Hallucinations that look individually plausible
+- ✗ Wrong correlations that only show at scale
+
+**Leaf Alignment**:
+
+Detects:
+- ✓ Distributional hallucinations
+- ✓ Wrong decision boundaries
+- ✓ Collective pattern failures
+- ✓ Generalization issues
+
+Misses:
+- ✗ Individual outlier quality
+- ✗ Redundancy (duplicates)
+- ✗ Subset-dependent effects
+
+#### The Gen2 Case Study: Why Shapley Missed It
+
+**The Problem**:
+
+Gen2 Synthetic Data (Real → Gen1 → Gen2):
+
+```
+Confusion Matrix Analysis:
+  Real training → Test:  Recall = 40%
+  Gen2 training → Test:  Recall = 10%  ✗ (-30% absolute)
+
+Leaf Alignment:
+  Reliably harmful: 93.39%  ✗✗✗ Catastrophic!
+
+Data Shapley:
+  Reliably harmful: 3.39%   ✓ Seems fine?!
+```
+
+**Shapley said Gen2 was fine, but it clearly wasn't!**
+
+**Why Shapley Missed the Problem**:
+
+Root cause: **Distributional hallucination**
+
+Gen2 points individually look plausible:
+- Valid feature ranges (AGE: 25-85, NUM_MEDS: 0-20)
+- No obvious outliers
+- Pass basic sanity checks
+
+BUT collectively have wrong patterns:
+- Wrong correlation: AGE vs NUM_MEDS
+- Wrong correlation: DIAGNOSIS vs READMISSION
+- Mode collapse toward majority class
+
+```
+Individual quality ✓ (Shapley)
+Collective quality ✗ (Leaf Alignment)
+```
+
+#### The Marginal Contribution Paradox
+
+What Shapley saw:
+
+```python
+# Shapley evaluation for Gen2 Point #42
+# Test in random subsets:
+
+Coalition 1: {Real points 1, 5, 12, 89, ...}  (mostly real)
+  Without #42: Performance = 0.72
+  With #42:    Performance = 0.72
+  Marginal:    0.00  (neutral - drowned out by real data)
+
+Coalition 2: {Gen2 points 3, 8, 15, 29, ...}  (mostly Gen2)
+  Without #42: Performance = 0.30  (bad coalition)
+  With #42:    Performance = 0.31  (slightly better)
+  Marginal:    +0.01  (helpful relative to other bad points!)
+
+Coalition 3: {Mix of real and Gen2}
+  Marginal:    -0.005
+
+Average Shapley value: +0.002  → Appears slightly beneficial!
+```
+
+The issue:
+- Gen2 points are **consistent with each other** (wrong, but consistent)
+- When added to other Gen2 points, they don't hurt much
+- When added to real points, they're drowned out
+- Marginal contribution looks fine
+- But when ALL Gen2 is used: consistent wrong patterns dominate
+
+**What Leaf Alignment Saw**:
+
+```python
+# Train model on ALL Gen2 data (10,000 points)
+model = train(all_gen2_data)
+
+# Point #42 lands in Leaf 237
+# Leaf 237 predicts: Class 1 (readmission)
+
+# Real patients in Leaf 237:
+real_labels = [0, 0, 0, 0, 1, 0, 0]  # Mostly Class 0
+
+# Accuracy = 1/7 = 14%
+# Utility = 0.14 - 0.5 = -0.36  ✗ Harmful!
+
+# This pattern repeats across 450/500 trees
+# Mean utility = -0.0245
+# CI = [-0.0251, -0.0239]  → Reliably harmful
+```
+
+The key:
+- Trains on full Gen2 dataset (not subsets)
+- Sees the collective wrong patterns
+- Detects that boundaries don't generalize to real data
+
+#### Side-by-Side Comparison
+
+**Gen2 Results**:
+
+| Method | Harmful | Beneficial | Runtime | Detected Problem? |
+|--------|---------|------------|---------|-------------------|
+| Shapley | 3.39% | 96.61% | 90 min | ❌ NO - looked fine |
+| Leaf Alignment | 93.39% | 0.54% | 5 min | ✅ YES - catastrophic |
+| Confusion Matrix | N/A | N/A | 2 min | ✅ YES - 30% recall drop |
+
+**Leaf Alignment agreed with confusion matrix. Shapley didn't.**
+
+**Real Training Data Results**:
+
+| Method | Harmful | Beneficial | Runtime |
+|--------|---------|------------|---------|
+| Shapley | 3.28% | 96.72% | 90 min |
+| Leaf Alignment | 0.25% | 89.69% | 5 min |
+| Confusion Matrix | N/A (baseline) | N/A | 2 min |
+
+Both methods agree real data is high quality.
+
+#### When to Use Each Method
+
+**Use Data Shapley When**:
+
+✅ **Cleaning individual noisy labels**
+- **Scenario**: Real training data with label errors
+- **Goal**: Find mislabeled points
+- **Example**: Medical records with wrong diagnoses
+
+✅ **Removing redundant points**
+- **Scenario**: Large dataset with duplicates
+- **Goal**: Reduce dataset size without losing performance
+- **Example**: Deduplicate patient records
+
+✅ **Fair data valuation**
+- **Scenario**: Multiple data contributors
+- **Goal**: Fairly compensate each contributor
+- **Example**: Data marketplace with pricing
+
+✅ **Understanding subset interactions**
+- **Scenario**: Complex dataset with dependencies
+- **Goal**: See how points interact in subsets
+- **Example**: Feature selection with correlations
+
+**Use Leaf Alignment When**:
+
+✅ **Evaluating synthetic data quality**
+- **Scenario**: Generated data from GAN/VAE/SMOTE
+- **Goal**: Check if it matches real distribution
+- **Example**: Validating synthetic medical records
+
+✅ **Detecting distributional issues**
+- **Scenario**: Data might have wrong collective patterns
+- **Goal**: Find if learned boundaries generalize
+- **Example**: Check for mode collapse in GAN
+
+✅ **Fast quality screening**
+- **Scenario**: Need quick assessment (5 min vs 90 min)
+- **Goal**: Rapid evaluation of multiple generations
+- **Example**: Iterate on synthetic generation parameters
+
+✅ **Class-specific diagnosis**
+- **Scenario**: Imbalanced classes, minority class critical
+- **Goal**: Check if both classes are well-represented
+- **Example**: Rare disease detection
+
+#### They're Complementary, Not Competing
+
+**Use Both Together**:
+
+Workflow for synthetic data validation:
+
+```
+Step 1: Confusion Matrix (~2 min)
+  → Quick check: Does aggregate performance drop?
+
+Step 2: Leaf Alignment (~5 min)
+  → If performance drops: Which points are hallucinated?
+  → Class-specific breakdown
+
+Step 3: Data Shapley (~90 min) - Optional
+  → If results differ from leaf alignment: Why?
+  → Subset-dependent effects?
+  → Individual point quality vs collective quality
+```
+
+Example decision tree:
+
+```
+Confusion matrix shows:
+  Gen2 recall drops 30%  ✗
+            ↓
+Leaf alignment shows:
+  93% hallucinated  ✗✗✗
+            ↓
+Decision: REJECT Gen2
+No need for Shapley - problem is clear!
+
+But if results were ambiguous:
+            ↓
+Run Shapley to understand:
+  - Are points individually bad?
+  - Or collectively bad but individually OK?
+  - Subset-dependent effects?
+```
+
+#### Real Example: Complementary Insights
+
+**Scenario**: Partially Corrupted Dataset
+
+Setup:
+- Dataset: 10,000 synthetic points
+- Issue: 1,000 points have wrong correlations
+- Remaining: 9,000 points are high quality
+
+**Data Shapley Results**:
+```
+Harmful points: 1,200 (12%)
+
+Top harmful:
+  - 1,000 genuinely wrong points (detected ✓)
+  - 200 outliers in the good data (detected ✓)
+```
+
+**Leaf Alignment Results**:
+```
+Harmful points: 1,050 (10.5%)
+
+Top harmful:
+  - 1,000 wrong correlation points (detected ✓)
+  - 50 points in empty leaves (detected ✓)
+  - Misses the 200 outliers (individually OK when combined)
+```
+
+**Combined insight**:
+- 1,000 points are definitely bad (both agree)
+- 200 are outliers (Shapley only)
+- 50 create empty regions (Leaf alignment only)
+- **Filter out all 1,250 points for best quality**
+
+#### Summary Table
+
+| Aspect | Data Shapley | Leaf Alignment |
+|--------|--------------|----------------|
+| **Measures** | Marginal contribution | Boundary alignment |
+| **Training** | Millions of models | One model |
+| **Runtime** | ~90 minutes | ~5 minutes |
+| **Detects** | Individual quality | Distributional quality |
+| **Best for** | Label errors, duplicates | Synthetic data, hallucinations |
+| **Type** | Counterfactual | Evaluation |
+| **Caught Gen2?** | ❌ No (3.39% harmful) | ✅ Yes (93.39% harmful) |
+| **Use when** | Have time, need detail | Need speed, check generation |
+
+#### Key Takeaway
+
+**Data Shapley and Leaf Alignment are NOT competing methods.**
+
+They answer different questions:
+- **Shapley**: "Is each point individually useful?"
+- **Leaf Alignment**: "Do collective patterns generalize?"
+
+For synthetic data evaluation:
+1. Start with Leaf Alignment (fast, catches distributional issues)
+2. Use Shapley if needed (deep dive into point-level quality)
+3. Always check Confusion Matrix first (sanity check)
+
+**The Gen2 lesson**:
+
+```
+Individual plausibility ≠ Collective quality
+```
+
+Synthetic data can have points that look fine individually but fail collectively. Leaf alignment catches this, Shapley doesn't.
+
+### 7.2 Leaf Alignment vs Confusion Matrix
+
+Both methods evaluate model performance, but at different granularities.
+
+#### What Confusion Matrix Tells You
+
+**Aggregate Performance**:
+
+```
+                Predicted
+                 0     1
+Actual    0    TN    FP
+          1    FN    TP
+
+Metrics:
+  Precision = TP / (TP + FP)
+  Recall    = TP / (TP + FN)
+  F1        = 2 × (Prec × Rec) / (Prec + Rec)
+```
+
+**Example - Gen2 vs Real**:
+
+```
+Training Data:   Real      Gen2      Change
+Precision:       18.34%    7.86%     -10.48%
+Recall:          39.96%    10.49%    -29.47%  ✗✗✗
+F1 Score:        25.14%    8.99%     -16.15%
+```
+
+**What it tells you**: Gen2 is bad (recall dropped 30%)
+
+**What it DOESN'T tell you**:
+- Which synthetic points are causing the problem?
+- How many points are harmful vs beneficial?
+- Can we filter and salvage some data?
+- Why did it fail? (distributional? class-specific?)
+
+#### What Leaf Alignment Adds
+
+**Point-Level Diagnosis**:
+
+```
+Reliably harmful:      9,339 (93.39%)  ← 93% of points are bad
+Reliably beneficial:      54 ( 0.54%)  ← Only 0.5% are good
+Uncertain:               607 ( 6.07%)
+
+Class-Specific:
+  Positive: 0% beneficial  ← This explains recall drop!
+```
+
+**What it tells you**:
+- 93% of synthetic data creates wrong boundaries
+- Positive class is completely hallucinated (0% beneficial)
+- Cannot salvage by filtering (only 0.5% usable)
+- Root cause: Distributional hallucination, especially in minority class
+
+#### Complementary Use
+
+**Workflow**:
+
+```
+Step 1: Confusion Matrix (2 min)
+  → "Is there a problem?"
+  → Gen2 recall = 10% vs Real recall = 40%
+  → YES, there's a problem!
+
+Step 2: Leaf Alignment (5 min)
+  → "Which points are causing it?"
+  → 93% harmful, 0% positive class beneficial
+  → "How bad is it?"
+  → Catastrophic - not salvageable
+
+Step 3: Decision
+  → REJECT Gen2 completely
+  → Need to fix generation, not filter
+```
+
+#### Summary
+
+| Method | Question Answered | Granularity | Output |
+|--------|-------------------|-------------|--------|
+| **Confusion Matrix** | "Does model perform well?" | Aggregate | Metrics (Prec/Rec/F1) |
+| **Leaf Alignment** | "Which points are harmful?" | Point-level | Per-point classification |
+
+**Use together**: Confusion matrix for quick screening, Leaf alignment for diagnosis.
+
+### 7.3 Leaf Alignment vs Distribution Metrics
+
+Distribution metrics (KL divergence, Wasserstein distance, etc.) measure statistical similarity but don't evaluate decision boundary quality.
+
+#### What Distribution Metrics Tell You
+
+**Statistical Distance**:
+
+```python
+# Compare real vs synthetic feature distributions
+from scipy.stats import ks_2samp
+
+for feature in features:
+    real_dist = real_data[feature]
+    synth_dist = synthetic_data[feature]
+
+    stat, pval = ks_2samp(real_dist, synth_dist)
+    print(f"{feature}: KS-stat={stat:.3f}, p={pval:.3f}")
+```
+
+**Example output**:
+```
+AGE:         KS-stat=0.023, p=0.89  ✓ Similar
+NUM_MEDS:    KS-stat=0.031, p=0.67  ✓ Similar
+DIAGNOSIS:   KS-stat=0.045, p=0.34  ✓ Similar
+```
+
+**Conclusion**: Marginal distributions match! Synthetic data looks good!
+
+**But**:
+
+```
+Leaf Alignment:
+  Reliably harmful: 93.39%  ✗✗✗ Catastrophic!
+```
+
+#### The Problem: Marginals ≠ Joints
+
+**Example**: Perfect marginals, wrong correlations
+
+```
+Real data correlations:
+  AGE ↔ NUM_MEDS:       +0.67  (older → more meds)
+  NUM_MEDS ↔ READMIT:   +0.43  (more meds → readmit)
+
+Synthetic correlations:
+  AGE ↔ NUM_MEDS:       +0.12  ✗ Wrong!
+  NUM_MEDS ↔ READMIT:   -0.08  ✗ Wrong!
+```
+
+Marginal distributions can match perfectly while correlations are completely wrong!
+
+#### What Leaf Alignment Catches
+
+**Joint Pattern Evaluation**:
+
+Leaf alignment evaluates the model's learned decision boundaries, which depend on joint distributions and feature interactions:
+
+```
+Real boundary: If (AGE > 65 AND NUM_MEDS > 10) → Readmit
+Synthetic boundary: If (AGE > 65 AND NUM_MEDS > 10) → No Readmit
+
+Same features, opposite prediction!
+→ Leaf alignment detects this mismatch
+```
+
+#### When Each Method Shines
+
+**Use Distribution Metrics When**:
+- Quick sanity check of feature ranges
+- Detecting obvious outliers or mode collapse
+- Validating univariate feature distributions
+- Fast screening (seconds)
+
+**Use Leaf Alignment When**:
+- Evaluating feature interactions and correlations
+- Checking if learned patterns generalize
+- Assessing decision boundary quality
+- Preparing data for ML training (5 min)
+
+#### Summary
+
+| Aspect | Distribution Metrics | Leaf Alignment |
+|--------|---------------------|----------------|
+| **Measures** | Marginal distributions | Joint patterns + boundaries |
+| **Can miss** | Correlation failures | Individual outliers |
+| **Runtime** | Seconds | Minutes |
+| **Best for** | Quick screening | ML readiness |
+
+**The lesson**: Matching marginals ≠ good ML training data. Always validate with task-specific methods like Leaf Alignment.
+
+### 7.4 Putting It All Together
+
+#### Recommended Evaluation Pipeline
+
+```
+1. Distribution Metrics (30 sec)
+   → Quick check: Do features look reasonable?
+   → Catch obvious mode collapse or outliers
+
+2. Confusion Matrix (2 min)
+   → Aggregate check: Does performance drop?
+
+3. Leaf Alignment (5 min)
+   → Point-level diagnosis: Which points are bad?
+   → Class-specific analysis: Is minority class salvageable?
+   → Decision: Use, filter, or reject?
+
+4. Data Shapley (90 min) - Optional
+   → Deep dive: Why are specific points bad?
+   → For real data cleaning or detailed analysis
+```
+
+#### Decision Matrix
+
+| Distribution Check | Confusion Matrix | Leaf Alignment | Decision |
+|-------------------|------------------|----------------|----------|
+| ✓ Good | ✓ Good | >85% beneficial | ✅ USE |
+| ✓ Good | ✓ Good | 70-85% beneficial | ✅ USE (filter) |
+| ✓ Good | ✗ Bad | >70% harmful | ❌ REJECT (wrong correlations) |
+| ✗ Bad | ✗ Bad | >70% harmful | ❌ REJECT (all levels fail) |
+| ✓ Good | ✗ Bad | 30-70% harmful | ⚠️ Investigate Shapley |
+
+**Key insight**: Distribution metrics can look good while Leaf Alignment detects catastrophic failures (Gen2 case).
+
+**What's Next?**
+
+Section 8 covers FAQs and troubleshooting for common issues encountered during leaf alignment analysis.
+
