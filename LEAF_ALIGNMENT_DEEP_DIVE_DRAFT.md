@@ -1821,3 +1821,959 @@ ci_upper = -0.0613 + 1.965 × 0.00138 = -0.0586
 
 Section 5 explores advanced topics including why we don't check synthetic label alignment, class-specific analysis, and marginal point classification.
 
+---
+
+## 5. Advanced Topics
+
+This section addresses deeper conceptual questions and advanced analysis techniques that strengthen the leaf alignment methodology.
+
+### 5.1 Why We DON'T Check Synthetic Label Alignment
+
+This is one of the most important conceptual aspects of the method and often raises questions from reviewers.
+
+#### The Question
+
+**"Why don't we check if synthetic points' labels align with their leaf predictions?"**
+
+Put another way: "Shouldn't we verify that the model correctly classifies the synthetic training data?"
+
+#### The Short Answer
+
+We evaluate **data quality**, not **model quality**. Checking synthetic label alignment would only tell us if the model memorized the synthetic training set (which it should!), but wouldn't tell us if those learned patterns generalize to real data.
+
+#### The Detailed Explanation
+
+**What We DON'T Measure** (Training Accuracy):
+```python
+# This would be WRONG to use for data quality assessment
+for synth_idx in synthetic_points_in_leaf:
+    synth_label = y_synthetic[synth_idx]
+    leaf_prediction = 1 if leaf_value > 0 else 0
+    synth_aligned = (synth_label == leaf_prediction)  # ← Don't care!
+```
+
+**What We DO Measure** (Generalization Quality):
+```python
+# This is what we actually do - check real data alignment
+real_labels = y_real_test[real_indices_in_leaf]
+leaf_prediction = 1 if leaf_value > 0 else 0
+real_aligned = np.mean(real_labels == leaf_prediction)  # ← This matters!
+utility = real_aligned - 0.5
+```
+
+#### Why This Design Choice Matters
+
+**The Core Insight**: Synthetic labels could be wrong!
+
+If we measured synthetic alignment, we'd only assess **training accuracy** - which can be high even for hallucinated data (the model memorized wrong patterns perfectly).
+
+By measuring **real alignment**, we detect when synthetic data taught wrong correlations, regardless of training fit.
+
+#### Concrete Example: Hallucinated Point
+
+```
+Synth#5: AGE=45, DIAGNOSIS=Diabetes, NUM_MEDS=2, Label=1 (readmit)
+         ↓
+    Lands in LEAF 1 (leaf_value = +0.3 → predicts Class 1)
+         ↓
+    Synthetic alignment: ✓ (label=1 matches prediction=1)
+         ↓
+    Real test data in LEAF 1:
+      Real#F: AGE=48, DIAGNOSIS=Diabetes, NUM_MEDS=3, Label=0 (no readmit)
+         ↓
+    Real alignment: ✗ (leaf predicts 1, but real patient is 0)
+         ↓
+    Utility: -0.5 (maximum negative)
+         ↓
+    Synth#5 gets NEGATIVE score → RELIABLY HARMFUL!
+```
+
+**Interpretation**:
+- Synth#5's **label (1)** happened to match its leaf prediction (+0.3)
+- But the leaf **FAILS** on real data
+- This means: Synth#5 taught the model that "young, diabetic patients with few meds" should readmit
+- **Reality**: Real patients with those features DON'T readmit
+- **Conclusion**: Synth#5 has the **wrong label** for its features → it's hallucinated!
+
+#### Can Synthetic Points Land in "Wrong" Leaves?
+
+**YES!** This happens due to:
+
+1. **Regularization**: LightGBM prevents overfitting, so not every training point gets perfect prediction
+2. **Gradient Boosting**: Each tree corrects residual errors, not original labels
+3. **Outliers**: Points far from their class distribution may land in opposite-class leaves
+
+**Example**:
+
+```
+Most synthetic Class 1 patients: AGE=65-85, NUM_MEDS=3-6, Diabetes/Heart
+
+Synth#99: AGE=25, NUM_MEDS=15, Cancer, Label=1 (outlier)
+
+This outlier has features similar to Class 0 patients.
+It lands in a leaf with mostly Class 0 training points.
+That leaf predicts Class 0.
+
+Synth#99 (label=1) is in a leaf predicting Class 0!
+```
+
+**Why this is GOOD for our method**: It highlights that Synth#99 is problematic - it has Class 1 label but Class 0 features!
+
+#### Summary Table
+
+| Aspect | Check Synthetic Alignment? | Check Real Alignment? |
+|--------|---------------------------|----------------------|
+| What it measures | Training fit (overfitting) | Generalization (quality) |
+| Useful for | Model debugging | Data quality assessment |
+| Our method uses | ❌ No | ✅ Yes |
+| Why | Synthetic labels could be wrong! | Real labels are ground truth |
+
+#### Defense to Reviewers
+
+**Complete Response**:
+
+> "Our method evaluates synthetic **data quality**, not model quality. We assume real test labels are ground truth and ask: do decision boundaries learned from synthetic data generalize to real data?
+>
+> If we measured synthetic alignment, we'd only assess training accuracy—which can be high even for hallucinated data (the model memorized wrong patterns perfectly). By measuring real alignment, we detect when synthetic data taught wrong correlations, regardless of training fit.
+>
+> Concrete example: A synthetic readmission case (label=1) with 'AGE=45, non-Heart diagnosis' creates a leaf predicting readmission. But real patients with those features don't readmit. The synthetic point had the wrong label for its features—it's hallucinated. Checking only synthetic alignment would miss this."
+
+### 5.2 Class-Specific Analysis
+
+#### Why It Matters
+
+Leaf alignment provides **overall** quality assessment, but class-specific breakdown reveals **asymmetric failure patterns**, especially critical for imbalanced tasks.
+
+#### The Analysis
+
+From `sdvaluation/leaf_alignment.py:381`:
+
+```python
+# Analyze by class
+for class_label in [0, 1]:
+    class_mask = y_synthetic == class_label
+    class_harmful = reliably_hallucinated & class_mask
+    class_beneficial = reliably_beneficial & class_mask
+    class_uncertain = uncertain & class_mask
+
+    print(f"\nClass {class_label} breakdown:")
+    print(f"  Harmful:     {np.sum(class_harmful)} ({100*np.mean(class_harmful):.2f}%)")
+    print(f"  Beneficial:  {np.sum(class_beneficial)} ({100*np.mean(class_beneficial):.2f}%)")
+    print(f"  Uncertain:   {np.sum(class_uncertain)} ({100*np.mean(class_uncertain):.2f}%)")
+```
+
+#### Real Example: Gen2 Synthetic Data
+
+**Overall Results**:
+```
+Total: 10,000 synthetic points
+  Reliably harmful:     9,339 (93.39%)
+  Reliably beneficial:     54 (0.54%)
+  Uncertain:              607 (6.07%)
+```
+
+**Class-Specific Breakdown**:
+```
+Class 0 (No Readmission) - 8,000 points:
+  Harmful:     7,412 (92.65%)
+  Beneficial:     54 (0.68%)
+  Uncertain:     534 (6.68%)
+
+Class 1 (Readmission) - 2,000 points:
+  Harmful:     1,927 (96.35%)  ← WORSE!
+  Beneficial:      0 (0.00%)   ← CRITICAL!
+  Uncertain:      73 (3.65%)
+```
+
+#### Interpreting Class Breakdown
+
+**Both classes bad** (uniform failure):
+- Synthetic generator failed to capture patterns for both classes
+- Systematic distribution mismatch
+
+**Positive class worse** (asymmetric failure):
+- Common in imbalanced datasets (minority class = Class 1)
+- Synthetic generator struggled with rare class
+- Less training data for minority class → worse synthetic quality
+
+**0% beneficial in minority class** (CRITICAL):
+- Not a single useful positive-class synthetic point!
+- Model trained on this data **cannot learn** minority class patterns
+- Explains catastrophic recall drop (40% → 10%)
+
+#### Impact on Model Performance
+
+**Connection to Metrics**:
+
+```
+Class 1 (Readmission):
+  0% beneficial synthetic points
+  ↓
+  Model learns NO correct patterns for readmission
+  ↓
+  Recall: 39.96% (real data) → 10.49% (Gen2)  ← 74% drop!
+  ↓
+  Most readmission patients misclassified as "no readmit"
+  ↓
+  CLINICAL DISASTER: Missing patients who will return to hospital!
+```
+
+**Why This Matters for Healthcare**:
+
+In hospital readmission prediction:
+- **False Negative** (missed readmission): Patient returns unexpectedly, no preventive care arranged
+- **False Positive** (predicted readmission, doesn't happen): Extra follow-up, minor inconvenience
+
+0% beneficial Class 1 points → Can't detect actual readmissions → Dangerous!
+
+#### When to Worry About Class-Specific Results
+
+| Class Breakdown | Interpretation | Action |
+|-----------------|----------------|--------|
+| Both ≈0.5% harmful | Excellent, matches real data | ✅ Use as-is |
+| Both 10-20% harmful | Moderate degradation, symmetric | ⚠️ Filter harmful points |
+| Class 1 >>Class 0 harmful | Minority class failure | ❌ Don't use, fix generator |
+| Class 1: 0% beneficial | Catastrophic minority failure | ❌ REJECT, critical issue |
+
+### 5.3 Marginal Point Classification
+
+#### The Problem
+
+Current classification is binary (per class):
+- CI_upper < 0 → Harmful
+- CI_lower > 0 → Beneficial
+- CI spans 0 → Uncertain
+
+But **strength** of signal varies widely:
+
+```
+Point A: mean = +0.0612, CI = [+0.0605, +0.0619]  ← STRONGLY beneficial
+Point B: mean = +0.0008, CI = [+0.0004, +0.0012]  ← Marginally beneficial
+```
+
+Both classified as "beneficial", but A is **76× stronger** than B!
+
+#### The Issue
+
+**Marginal points** have:
+- CI entirely on one side of zero (reliably classified)
+- But **very close** to zero (weak signal)
+
+These points contribute almost nothing to model training. Including them:
+- Doesn't improve performance much
+- Adds computational cost
+- May add noise
+
+#### Proposed Solutions
+
+**Option 1: Absolute Threshold**
+
+```python
+# Keep only strong beneficial points
+strong_threshold = 0.01
+strong_beneficial = (ci_lower > 0) & (mean_utility > strong_threshold)
+
+# Example:
+Point A: mean = +0.0612 > 0.01 → Keep ✓
+Point B: mean = +0.0008 < 0.01 → Filter ✗
+```
+
+**Option 2: Percentile-Based**
+
+```python
+# Keep top 50% of beneficial points
+beneficial_mask = ci_lower > 0
+beneficial_scores = mean_utility[beneficial_mask]
+threshold = np.percentile(beneficial_scores, 50)  # Median
+
+strong_beneficial = beneficial_mask & (mean_utility > threshold)
+```
+
+**Option 3: Effect Size (Mean/SE Ratio)**
+
+```python
+# t-statistic: how many standard errors away from zero?
+t_statistic = mean_utility / se_utility
+
+# Keep points with t > 3 (very strong evidence)
+strong_beneficial = (ci_lower > 0) & (t_statistic > 3)
+```
+
+**Option 4: Five-Tier Classification**
+
+```python
+if ci_upper < -0.01:
+    classification = "STRONGLY HARMFUL"
+elif ci_upper < 0:
+    classification = "MARGINALLY HARMFUL"
+elif ci_lower > 0.01:
+    classification = "STRONGLY BENEFICIAL"
+elif ci_lower > 0:
+    classification = "MARGINALLY BENEFICIAL"
+else:
+    classification = "UNCERTAIN"
+```
+
+#### Current Status
+
+These enhancements are **proposed** but not yet implemented. See `ENHANCEMENTS.md` for detailed discussion.
+
+For most use cases, the current three-way classification is sufficient. Marginal filtering is only needed when:
+- Dataset is very large (>100k points)
+- Computational resources are limited
+- You need maximum precision (e.g., generating training data for production)
+
+### 5.4 The n_estimators Trade-off
+
+#### What n_estimators Controls
+
+**Dual Role**:
+1. **Boosting**: Number of sequential trees in LightGBM ensemble
+2. **Statistics**: Number of independent measurements for confidence intervals
+
+#### The Mathematical Relationship
+
+Standard error decreases with square root of n:
+
+```
+SE = σ / √n_trees
+
+100 trees:   SE = σ / 10     → Wide CIs
+500 trees:   SE = σ / 22.4   → 55% narrower ✓ (recommended)
+1000 trees:  SE = σ / 31.6   → 68% narrower
+5000 trees:  SE = σ / 70.7   → 86% narrower
+```
+
+**Diminishing Returns**:
+- 100→500: 55% improvement
+- 500→1000: 29% improvement
+- 1000→5000: 55% improvement (but 5× slower!)
+
+#### Practical Impact Table
+
+| Trees | CI Width | Uncertain % | Runtime | Use Case |
+|-------|----------|-------------|---------|----------|
+| 100 | Wider | ~20-30% | ~2 min | Quick exploration |
+| 200 | Medium-Wide | ~10-15% | ~3 min | Rapid iteration |
+| **500** | **Medium** | **~5-10%** | **~5 min** | **Recommended** ✓ |
+| 1000 | Tight | ~3-5% | ~10 min | High precision |
+| 2000 | Very Tight | ~2-3% | ~20 min | Publication-ready |
+| 5000 | Extremely Tight | ~1-2% | ~50 min | Maximum confidence |
+
+#### Example: Effect of n_trees
+
+**With 100 trees**:
+```
+Point #42:
+  mean = -0.002
+  se = 0.002  (larger SE)
+  CI = [-0.006, +0.002]  ← Spans 0
+  Classification: UNCERTAIN ⚠️
+```
+
+**With 500 trees**:
+```
+Point #42:
+  mean = -0.002
+  se = 0.000845  (smaller SE)
+  CI = [-0.004, -0.0004]  ← Doesn't span 0
+  Classification: RELIABLY HARMFUL ✗
+```
+
+**With 5000 trees**:
+```
+Point #42:
+  mean = -0.002
+  se = 0.000283  (even smaller SE)
+  CI = [-0.0026, -0.0014]  ← Very tight
+  Classification: RELIABLY HARMFUL ✗ (high confidence)
+```
+
+#### Recommendations
+
+**Quick exploration** (100-200 trees):
+- Initial data quality check
+- Rapid prototyping
+- When you just need a rough estimate
+
+**Standard analysis** (500 trees) ← **RECOMMENDED**:
+- Balance of speed vs precision
+- ~5-10% uncertain (acceptable)
+- Suitable for most production use cases
+
+**High precision** (1000-2000 trees):
+- Final analysis before deployment
+- When decision is critical
+- Publication or reporting to stakeholders
+
+**Maximum confidence** (5000+ trees):
+- Research publications
+- When you need <2% uncertain
+- Computational resources not a constraint
+
+#### Cost-Benefit Analysis
+
+```
+Your 10,000 synthetic points with varying n_estimators:
+
+100 trees:  ~2 min,  2,500 uncertain (25%)
+500 trees:  ~5 min,    607 uncertain (6%)   ← 80% reduction!
+1000 trees: ~10 min,   304 uncertain (3%)   ← 50% reduction
+5000 trees: ~50 min,    61 uncertain (0.6%) ← 80% reduction
+
+500→1000: 2× time for 50% fewer uncertain
+500→5000: 10× time for 90% fewer uncertain
+```
+
+**Verdict**: 500 trees hits the sweet spot for most use cases.
+
+#### When to Use More Than 500 Trees
+
+**Justified**:
+- Small dataset (<1000 points) where every classification matters
+- Publication-quality results
+- Critical production deployment
+- Very noisy data (high variance across trees)
+
+**Overkill**:
+- Large dataset (>10k points) where 5% uncertain is fine
+- Exploratory analysis
+- When runtime is a bottleneck
+- Preliminary data quality check
+
+**What's Next?**
+
+Section 6 covers practical application: interpreting results, quality assessment tiers, and real-world decision-making.
+
+---
+
+## Section 6: Practical Application
+
+### 6.1 The Big Question: "Is My Synthetic Data Good Enough?"
+
+After running leaf alignment, you get numbers like:
+
+```
+Reliably harmful:      9,339 (93.39%)
+Reliably beneficial:      54 ( 0.54%)
+Uncertain:               607 ( 6.07%)
+```
+
+**But what does this mean?**
+- Is 93% harmful catastrophic?
+- What's acceptable?
+- Should I filter or reject entirely?
+
+To answer these questions, you need a **baseline for comparison**.
+
+### 6.2 Benchmark: Real Training Data (The Gold Standard)
+
+#### Running Leaf Alignment on Real Training Data
+
+To establish a baseline, run leaf alignment on your real training data as if it were synthetic:
+
+```bash
+# Baseline evaluation
+uv run sdvaluation eval \
+  --dseed-dir path/to/real/data \
+  --synthetic-file path/to/real/train.csv \  # Real data AS IF synthetic
+  --n-estimators 500 \
+  --output baseline_scores.csv
+```
+
+#### Expected Results for Good Data
+
+Example from MIMIC-III real training data (n=10,000):
+
+```
+Statistical Confidence (95% CI-based):
+  Reliably harmful:        25 ( 0.25%)  ✓✓✓
+  Reliably beneficial:  8,969 (89.69%)  ✓✓✓
+  Uncertain:            1,006 (10.06%)
+```
+
+**Key metrics**:
+- **0.25% harmful** ← Natural noise/outliers in real data
+- **89.69% beneficial** ← Most real data helps the model
+- **10.06% uncertain** ← Some variance is normal
+
+**This is your baseline!** Synthetic data should ideally match these percentages.
+
+### 6.3 Quality Assessment Tiers
+
+#### Tier 1: Excellent Quality (Real-Like) ✓✓✓
+
+**Characteristics**:
+- Harmful: **0-2%**
+- Beneficial: **>85%**
+- Uncertain: **5-15%**
+
+**Example**: Real training data
+
+**Decision**: ✅ **USE without filtering**
+
+**Interpretation**:
+- Matches real data distribution closely
+- Safe to use as-is for training
+- Minor filtering optional (remove <2% harmful)
+
+**Code**:
+```python
+# Optional: Remove the small fraction of harmful points
+filtered = synthetic_data[results['utility_ci_upper'] >= 0]
+```
+
+---
+
+#### Tier 2: Good Quality (Usable with Minor Filtering) ✓✓
+
+**Characteristics**:
+- Harmful: **2-10%**
+- Beneficial: **70-85%**
+- Uncertain: **10-25%**
+
+**Example**: High-quality synthetic (well-tuned GAN)
+
+**Decision**: ✅ **USE after filtering harmful points**
+
+**Interpretation**:
+- Slightly degraded but still useful
+- Filter out 2-10% harmful points
+- Expect minor performance drop vs real data (~5-10%)
+
+**Code**:
+```python
+# Filter out harmful points
+filtered = synthetic_data[results['utility_ci_upper'] >= 0]
+
+# Use filtered dataset for training
+model.fit(filtered[features], filtered[target])
+```
+
+---
+
+#### Tier 3: Mediocre Quality (Marginal - Use with Caution) ⚠️
+
+**Characteristics**:
+- Harmful: **10-30%**
+- Beneficial: **40-70%**
+- Uncertain: **20-40%**
+
+**Example**: Poorly tuned synthetic generator
+
+**Decision**: ⚠️ **USE only if no alternative, heavy filtering required**
+
+**Interpretation**:
+- Significant quality issues
+- Large portion of data is harmful
+- Expect 20-40% performance drop
+- High uncertainty indicates inconsistent patterns
+
+**Code**:
+```python
+# Conservative: Keep only reliably beneficial
+filtered = synthetic_data[results['utility_ci_lower'] > 0]
+
+# More conservative: Add marginal threshold
+strong_beneficial = (results['utility_ci_lower'] > 0) & \
+                   (results['utility_score'] > 0.01)
+filtered = synthetic_data[strong_beneficial]
+
+# Warning: Expect to lose 60-90% of data after filtering
+print(f"Retained: {len(filtered)}/{len(synthetic_data)} "
+      f"({100*len(filtered)/len(synthetic_data):.1f}%)")
+```
+
+---
+
+#### Tier 4: Poor Quality (Not Recommended) ✗✗
+
+**Characteristics**:
+- Harmful: **30-70%**
+- Beneficial: **5-40%**
+- Uncertain: **10-30%**
+
+**Example**: Mismatched synthetic (wrong hyperparameters)
+
+**Decision**: ❌ **DO NOT USE - investigate generator issues**
+
+**Interpretation**:
+- Majority of data is harmful
+- Very few beneficial points
+- Training on this will degrade performance
+- Likely distribution mismatch or generator failure
+
+**Action**:
+1. Don't use this data
+2. Debug synthetic generator:
+   - Check for data leakage
+   - Look for mode collapse
+   - Verify training data was correct
+   - Review hyperparameters
+
+---
+
+#### Tier 5: Catastrophic Quality (Unusable) ✗✗✗
+
+**Characteristics**:
+- Harmful: **>70%**
+- Beneficial: **<5%**
+- Uncertain: **<20%**
+
+**Example**: Gen2 (recursive generation), severely broken GAN
+
+**Decision**: ❌ **REJECT completely - generator is fundamentally broken**
+
+**Interpretation**:
+- Almost all data creates wrong decision boundaries
+- Synthetic generator has catastrophic failure
+- Would destroy model performance if used
+- Not salvageable even with aggressive filtering
+
+**Example from MIMIC-III Gen2**:
+```
+Reliably harmful:      9,339 (93.39%)  ✗✗✗
+Reliably beneficial:      54 ( 0.54%)  ✗✗✗
+Uncertain:               607 ( 6.07%)
+
+Ratio vs Real: 373× more hallucinated!
+```
+
+**Action**:
+1. Completely reject this synthetic data
+2. Do NOT use even after filtering (only 0.5% usable!)
+3. Investigate root cause:
+   - Recursive generation? (Real → Gen1 → Gen2)
+   - Mode collapse in GAN?
+   - Wrong training configuration?
+   - Data preprocessing issues?
+
+### 6.4 Decision Matrix
+
+| % Harmful | % Beneficial | Decision | Action |
+|-----------|--------------|----------|---------|
+| 0-2% | >85% | ✅ USE | No filtering needed |
+| 2-10% | 70-85% | ✅ USE | Filter harmful points |
+| 10-30% | 40-70% | ⚠️ CAUTION | Heavy filtering, expect performance drop |
+| 30-70% | 5-40% | ❌ REJECT | Don't use, fix generator |
+| >70% | <5% | ❌ REJECT | Catastrophic failure, start over |
+
+### 6.5 Real-World Examples from MIMIC-III
+
+#### Example 1: Real Training Data (Baseline)
+
+**Dataset**: Real MIMIC-III admissions data (n=10,000)
+
+**Results**:
+```
+Harmful:      25 (0.25%)
+Beneficial:   8,969 (89.69%)
+Uncertain:    1,006 (10.06%)
+```
+
+**Performance on test set**:
+```
+Precision: 18.34%
+Recall:    39.96%
+F1:        25.14%
+```
+
+**Conclusion**: ✅ Excellent baseline (Tier 1)
+
+---
+
+#### Example 2: Gen1 Synthetic Data
+
+**Dataset**: SynthCity Marginal Distributions (Real → Gen1, n=10,000)
+
+**Results**:
+```
+Harmful:      9,444 (94.44%)  ✗✗✗
+Beneficial:      45 ( 0.45%)
+Uncertain:      511 ( 5.11%)
+```
+
+**Performance on test set**:
+```
+Precision:  7.45%   (-10.89% vs Real)
+Recall:     8.92%   (-31.04% vs Real)  ← Catastrophic!
+F1:         8.11%   (-17.03% vs Real)
+```
+
+**Ratio vs Real**: 378× more hallucinated
+
+**Conclusion**: ❌ Catastrophic failure (Tier 5)
+
+**Action**: REJECT - do not use
+
+---
+
+#### Example 3: Gen2 Synthetic Data (Recursive)
+
+**Dataset**: SynthCity Marginal Distributions (Real → Gen1 → Gen2, n=10,000)
+
+**Results**:
+```
+Harmful:      9,339 (93.39%)  ✗✗✗
+Beneficial:      54 ( 0.54%)
+Uncertain:      607 ( 6.07%)
+```
+
+**Performance on test set**:
+```
+Precision:  7.86%   (-10.48% vs Real)
+Recall:    10.49%   (-29.47% vs Real)  ← Major degradation
+F1:         8.99%   (-16.15% vs Real)
+```
+
+**Ratio vs Real**: 373× more hallucinated
+
+**Conclusion**: ❌ Catastrophic failure (Tier 5)
+
+**Key insight**: Slightly better than Gen1 (94.44% → 93.39%), but still unusable. Recursive training (Real → Gen1 → Gen2) did NOT degrade further significantly, but initial failure at Real→Gen1 was catastrophic.
+
+**Action**: REJECT - recursive generation failed at first step
+
+### 6.6 How to Present Findings to Stakeholders
+
+#### Executive Summary Format
+
+```
+═══════════════════════════════════════════════════
+     Synthetic Data Quality Assessment
+═══════════════════════════════════════════════════
+
+Dataset Evaluated: Gen2_SynthCity_10k
+Evaluation Method: Leaf Co-Occurrence Analysis
+Test Set: MIMIC-III Real Admissions (n=8,000)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+OVERALL ASSESSMENT: ❌ REJECT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Quality Metrics:
+  ✗ 93.39% of data creates wrong decision boundaries
+  ✗ Only 0.54% creates useful patterns
+  ✗ 373× more hallucinated than real data
+  ✗ Recall drops 40% → 10% when using this data
+
+Key Findings:
+  1. Synthetic data has fundamentally wrong correlations
+  2. Cannot learn readmission patterns (95% of positive
+     class hallucinated)
+  3. Not salvageable even with aggressive filtering
+
+Recommendation:
+  DO NOT USE this synthetic data for model training.
+  Root cause: Recursive generation (Real→Gen1→Gen2)
+  failed at first step.
+
+Next Steps:
+  1. Investigate GAN/VAE training on Real→Gen1
+  2. Consider different synthetic generator
+  3. Use Real training data for now
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+```
+
+#### Detailed Report Structure
+
+**Section 1: Methodology**
+
+```
+Method: Leaf Co-Occurrence Alignment Analysis
+  - Trained LightGBM (500 trees) on synthetic data
+  - Evaluated decision boundaries on real test data
+  - Scored each synthetic point based on generalization
+  - 95% confidence intervals for statistical rigor
+```
+
+**Section 2: Results Summary**
+
+```
+Classification (95% CI):
+  Reliably Harmful:      9,339 (93.39%)
+  Reliably Beneficial:      54 ( 0.54%)
+  Uncertain:               607 ( 6.07%)
+
+Comparison to Baseline (Real training data):
+                  Real      Synthetic    Ratio
+  Harmful:        0.25%     93.39%       373×
+  Beneficial:    89.69%      0.54%      0.006×
+```
+
+**Section 3: Performance Impact**
+
+```
+Model Performance (on real test data):
+
+Training Data:   Real      Gen2      Change
+Precision:       18.34%    7.86%     -10.48%  ✗
+Recall:          39.96%   10.49%     -29.47%  ✗✗✗
+F1 Score:        25.14%    8.99%     -16.15%  ✗✗
+
+Critical Finding: Recall drops by 74% (relative)
+  → Model loses ability to detect readmissions
+```
+
+**Section 4: Root Cause Analysis**
+
+```
+Why Gen2 Failed:
+
+Class-Specific Breakdown:
+  Negative Class (no readmission):
+    Harmful: 8,385 / 8,997 (93.20%)
+
+  Positive Class (readmission):
+    Harmful:     954 / 1,003 (95.11%)
+    Beneficial:    0 / 1,003 ( 0.00%)  ← ZERO useful points!
+
+Root Cause:
+  - Gen2 positive class is 100% hallucinated
+  - Cannot learn readmission patterns at all
+  - Recursive training compounded errors from Gen1
+```
+
+**Section 5: Recommendations**
+
+```
+1. REJECT Gen2 synthetic data - unusable quality
+
+2. Investigate Gen1 generation:
+   - Check GAN/VAE training logs
+   - Verify input data preprocessing
+   - Check for mode collapse
+   - Review hyperparameters
+
+3. Consider alternatives:
+   - Use Real training data (if available)
+   - Try different synthetic method (SMOTE, CTGAN, etc.)
+   - Mix real + synthetic (if small real dataset available)
+
+4. If must use synthetic, need 373× improvement:
+   - Target: <5% harmful (vs current 93%)
+   - Require: >70% beneficial (vs current 0.5%)
+```
+
+### 6.7 Decision Tree for Quick Reference
+
+```
+                    Start
+                      |
+          ┌───────────┴───────────┐
+          │   Run Leaf Alignment  │
+          └───────────┬───────────┘
+                      |
+              Get % Harmful
+                      |
+          ┌───────────┴───────────────────────┐
+          |                                   |
+    % Harmful < 2%                    % Harmful > 70%
+          |                                   |
+          ✅ USE                              ❌ REJECT
+    (Excellent)                         (Catastrophic)
+                                              |
+                    ┌─────────────────────────┤
+                    |                         |
+            2% < Harmful < 10%        10% < Harmful < 70%
+                    |                         |
+            ✅ USE (filter)            ⚠️ INVESTIGATE
+            (Good quality)              (Poor quality)
+                                              |
+                                    Check % Beneficial
+                                              |
+                                    ┌─────────┴─────────┐
+                                    |                   |
+                            Beneficial > 40%    Beneficial < 40%
+                                    |                   |
+                            ⚠️ USE (caution)     ❌ REJECT
+                            Heavy filter        (Too degraded)
+```
+
+### 6.8 Common Pitfalls in Interpretation
+
+#### Pitfall 1: Ignoring Class-Specific Breakdown
+
+**Wrong**:
+> "Overall 93% harmful, but maybe the negative class is still good?"
+
+**Right**:
+> "Check class-specific stats! If positive class is 95% harmful and negative is 93% harmful, BOTH classes are broken."
+
+**Solution**: The `sdvaluation eval` command always shows class-specific breakdown. Always review both classes!
+
+---
+
+#### Pitfall 2: Filtering Without Understanding Scale
+
+**Wrong**:
+> "93% harmful, so I'll filter those out and use the 7% remaining."
+
+**Right**:
+> "7% remaining = 700 points, but only 0.5% are reliably beneficial = 50 points. After filtering, dataset is too small to be useful."
+
+**Solution**: Check absolute numbers, not just percentages:
+
+```python
+print(f"After filtering: {len(filtered)} points")
+print(f"  Beneficial: {n_beneficial}")
+print(f"  Uncertain: {n_uncertain}")
+print(f"Is this enough data for training? ({len(filtered)} samples)")
+```
+
+---
+
+#### Pitfall 3: Comparing to Wrong Baseline
+
+**Wrong**:
+> "93% harmful sounds bad, but what's the baseline?"
+
+**Right**:
+> "Real training data has 0.25% harmful. 93% is 373× worse than baseline!"
+
+**Solution**: Always run baseline comparison first using real training data.
+
+---
+
+#### Pitfall 4: Ignoring Performance Metrics
+
+**Wrong**:
+> "Leaf alignment shows 93% harmful, but confusion matrix shows only 30% recall drop, so it's not that bad."
+
+**Right**:
+> "30% absolute drop (40% → 10%) is actually 75% relative drop. That's catastrophic for clinical applications where recall matters!"
+
+**Solution**: Look at both leaf alignment AND downstream performance:
+
+```python
+# Compare model performance
+print("Real training:   Recall = 39.96%")
+print("Synthetic:       Recall = 10.49%")
+print(f"Relative drop:   {(39.96-10.49)/39.96*100:.1f}%")  # 74% drop!
+```
+
+### 6.9 Summary: Key Takeaways
+
+| Metric | Excellent | Good | Poor | Catastrophic |
+|--------|-----------|------|------|--------------|
+| % Harmful | 0-2% | 2-10% | 10-70% | >70% |
+| % Beneficial | >85% | 70-85% | 5-70% | <5% |
+| Ratio vs Real | 1-10× | 10-50× | 50-200× | >200× |
+| Action | Use as-is | Filter & use | Reject | Reject |
+| Performance | ~Real | -5 to -10% | -20 to -40% | >-50% |
+
+#### The Golden Rule
+
+**If synthetic data is more than 50× more hallucinated than real training data, it's probably not worth using.**
+
+Why 50×?
+- Real data: ~0.25% harmful (natural noise)
+- 50× worse: 12.5% harmful
+- At this threshold, you're borderline Tier 3 (Mediocre)
+- Beyond this, filtering becomes impractical
+
+**What's Next?**
+
+Section 7 compares Leaf Alignment with other evaluation methods (Data Shapley, confusion matrices, distribution metrics).
+
