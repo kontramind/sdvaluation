@@ -3378,3 +3378,759 @@ Same features, opposite prediction!
 
 Section 8 covers FAQs and troubleshooting for common issues encountered during leaf alignment analysis.
 
+---
+
+## Section 8: FAQs & Troubleshooting
+
+This section addresses common questions and practical issues you may encounter when using leaf alignment.
+
+### 8.1 Conceptual Questions
+
+#### Q1: Why do we use log-odds for leaf values?
+
+**Answer**: LightGBM uses log-odds (logit) space for binary classification because:
+
+1. **Unbounded range**: Log-odds can be any value from -∞ to +∞, while probabilities are constrained to [0, 1]
+2. **Additive**: Gradient boosting works by adding corrections:
+   ```python
+   final_prediction = base_score + tree_1_value + tree_2_value + ...
+   ```
+   This is only mathematically valid in log-odds space
+3. **Symmetric around 0**: log-odds = 0 corresponds to p = 0.5 (neutral)
+
+**Conversion**:
+```python
+# Log-odds to probability
+probability = 1 / (1 + exp(-log_odds))
+
+# Probability to log-odds
+log_odds = log(p / (1 - p))
+```
+
+**For leaf alignment**: We only care about the **sign** of the leaf value:
+- `leaf_value > 0` → predicts Class 1
+- `leaf_value < 0` → predicts Class 0
+
+---
+
+#### Q2: Can a synthetic point with label=1 land in a leaf that predicts Class 0?
+
+**Answer**: **YES, absolutely!** This happens for several reasons:
+
+**1. Regularization**:
+```python
+leaf_value = -Σ(gradients) / (Σ(hessians) + λ)
+#                                          ↑ regularization
+```
+The λ term shrinks leaf values toward zero, which can flip predictions for borderline leaves.
+
+**2. Ensemble effects**:
+- A single tree might misclassify a point
+- The final prediction combines all 500 trees
+- One tree can be "wrong" while the ensemble is "right"
+
+**3. Outliers or noise**:
+- Synthetic point might be an outlier in its own class
+- Tree split might group it with opposite class
+
+**Example**:
+```python
+Synth#42: label = 1 (positive class)
+
+Tree 50, Leaf 237:
+  - Contains: [Synth#42 (label=1), Synth#89 (label=0), Synth#102 (label=0)]
+  - Majority: Class 0
+  - leaf_value = -0.3 < 0 → Predicts Class 0
+  - Synth#42 lands in leaf predicting OPPOSITE of its label
+```
+
+**This is NORMAL and EXPECTED**! It's why we use 500 trees and statistical aggregation.
+
+---
+
+#### Q3: What's the difference between "uncertain" and "marginal"?
+
+**Answer**: These are different concepts:
+
+**Uncertain** (Statistical term):
+- **Definition**: Confidence interval spans zero
+- **Meaning**: Trees disagree on whether point is beneficial or harmful
+- **Cause**: High variance across trees
+- **Example**:
+  ```
+  mean = +0.02
+  CI = [-0.01, +0.05]  ← Spans 0
+  Classification: UNCERTAIN
+  ```
+
+**Marginal** (Practical term):
+- **Definition**: Statistically significant but practically small effect
+- **Meaning**: Point is reliably beneficial/harmful, but weak signal
+- **Cause**: Low mean utility (close to zero)
+- **Example**:
+  ```
+  mean = +0.0008
+  CI = [+0.0003, +0.0013]  ← Doesn't span 0
+  Classification: RELIABLY BENEFICIAL
+  But: Marginal contribution (very weak)
+  ```
+
+**Comparison**:
+
+| Aspect | Uncertain | Marginal |
+|--------|-----------|----------|
+| **CI spans 0?** | Yes | No |
+| **Classification** | "Uncertain" | "Beneficial" or "Harmful" |
+| **Issue** | Statistical: can't tell direction | Practical: effect is tiny |
+| **Solution** | More trees | Threshold filtering (see ENHANCEMENTS.md) |
+
+---
+
+#### Q4: Why don't we check if synthetic labels align with their predictions?
+
+**Answer**: Because we're evaluating **data quality**, not **model quality**.
+
+**What we DON'T do**:
+```python
+# BAD: Checking training fit
+for synth_point in synthetic_data:
+    prediction = model.predict(synth_point)
+    if prediction == synth_point.label:
+        score = "good"  # ✗ Wrong approach!
+```
+
+**What we DO**:
+```python
+# GOOD: Checking generalization
+for synth_point in synthetic_data:
+    leaf = model.get_leaf(synth_point)
+    real_points_in_leaf = get_real_test_data_in_leaf(leaf)
+    accuracy = evaluate(leaf, real_points_in_leaf)  # ✓ Right approach!
+```
+
+**Why?**:
+1. **Training fit can be perfect with hallucinated data**:
+   - Hallucinated point creates its own leaf
+   - Model "learns" it perfectly
+   - But fails to generalize to real test data
+
+2. **We care about generalization**:
+   - Does synthetic data teach correct patterns?
+   - Do learned boundaries work on real data?
+
+**Example**:
+```
+Synth#42: AGE=150, NUM_MEDS=50, label=1  (hallucinated)
+
+Training evaluation:
+  Model predicts: Class 1 ✓ (matches label)
+  Training fit: Perfect!  ← Misleading
+
+Test evaluation (our method):
+  Real patients in this leaf: 0 (empty leaf)
+  Utility: -1.0 (penalty)  ← Correctly identifies problem
+```
+
+See Section 5.1 (Advanced Topics) for full discussion.
+
+---
+
+#### Q5: Why don't we use probabilities instead of log-odds?
+
+**Answer**: We **could** convert to probabilities, but it's unnecessary:
+
+**What we need**: Only the **predicted class** (0 or 1)
+
+**From log-odds**:
+```python
+if leaf_value > 0:
+    predicted_class = 1  # Fast, direct
+else:
+    predicted_class = 0
+```
+
+**From probability**:
+```python
+probability = sigmoid(leaf_value)  # Extra computation
+if probability > 0.5:
+    predicted_class = 1
+else:
+    predicted_class = 0
+```
+
+**Reasons to stick with log-odds**:
+1. **Efficiency**: No sigmoid computation needed
+2. **Simplicity**: Direct sign check
+3. **Consistency**: Matches LightGBM internal representation
+4. **No loss of information**: We only need direction, not magnitude
+
+**When probabilities are useful**:
+- Calibrated predictions for production
+- Ranking by confidence
+- Cost-sensitive learning
+
+But for leaf alignment, we only need: "Does this leaf predict Class 0 or Class 1?"
+
+---
+
+### 8.2 Practical Questions
+
+#### Q6: How do I choose n_estimators?
+
+**Answer**: Depends on your use case:
+
+| Trees | Runtime | Uncertain % | Use Case |
+|-------|---------|-------------|----------|
+| **100-200** | ~2 min | 12-15% | Quick exploration, iteration |
+| **500** | ~5 min | 5-7% | **RECOMMENDED** - Standard analysis |
+| **1000** | ~10 min | 3-4% | High precision, final analysis |
+| **2000-5000** | ~20-50 min | 1-3% | Publication, maximum confidence |
+
+**Decision tree**:
+```
+Are you iterating on synthetic generation?
+  YES → 100-200 trees (fast feedback)
+  NO  ↓
+
+Is this for publication or critical deployment?
+  YES → 1000-5000 trees (maximum confidence)
+  NO  ↓
+
+Standard analysis → 500 trees (recommended)
+```
+
+**Diminishing returns**: Due to √n law, doubling trees gives only 1.4× tighter CIs but 2× runtime.
+
+See Section 5.4 (Advanced Topics) for detailed analysis.
+
+---
+
+#### Q7: What if I have more than 2 classes (multiclass)?
+
+**Answer**: Leaf alignment currently supports **binary classification only**.
+
+**For multiclass** (3+ classes):
+
+**Option 1: One-vs-Rest (OVR)**
+```python
+# Treat each class separately
+for target_class in [0, 1, 2]:
+    binary_labels = (y == target_class)  # True/False
+    run_leaf_alignment(X, binary_labels, ...)
+```
+
+**Option 2: Pairwise comparison**
+```python
+# Compare class pairs
+for class_a, class_b in [(0,1), (0,2), (1,2)]:
+    subset = data[data.label.isin([class_a, class_b])]
+    run_leaf_alignment(subset, ...)
+```
+
+**Option 3: Extension (future work)**
+- Modify leaf utility calculation for multiclass
+- Use `leaf_value` vector (one per class)
+- Compare argmax(leaf_values) vs true labels
+
+**Current limitation**: LightGBM multiclass uses different leaf value structure (vector instead of scalar), requiring code modifications.
+
+---
+
+#### Q8: Can I use this for regression tasks?
+
+**Answer**: **Not directly**, but the concept can be adapted.
+
+**Current method**: Binary classification
+- Leaf value = log-odds (scalar)
+- Predicted class = sign of leaf_value
+- Utility = accuracy - 0.5
+
+**For regression**: Different approach needed
+- Leaf value = predicted continuous value
+- No "class" to predict
+- Need different utility metric
+
+**Possible adaptation**:
+```python
+def calculate_leaf_utility_regression(y_true_real, leaf_value):
+    # Option 1: Mean absolute error
+    mae = np.mean(np.abs(y_true_real - leaf_value))
+    utility = -mae  # Lower MAE = better
+
+    # Option 2: R² score
+    ss_res = np.sum((y_true_real - leaf_value)**2)
+    ss_tot = np.sum((y_true_real - y_true_real.mean())**2)
+    r2 = 1 - (ss_res / ss_tot)
+    utility = r2  # Higher R² = better
+
+    return utility
+```
+
+**Challenges**:
+- No natural "accuracy" baseline like 0.5
+- Outliers have huge impact on MAE/MSE
+- Harder to interpret "harmful" vs "beneficial"
+
+**Status**: Experimental, not yet implemented in sdvaluation.
+
+---
+
+#### Q9: What if my test set is tiny (n=100)?
+
+**Answer**: Small test sets create issues:
+
+**Problems**:
+1. **Many empty leaves**:
+   - 500 trees × ~20 leaves/tree = ~10,000 leaves
+   - Only 100 test points to distribute
+   - Most leaves will be empty → many -1.0 penalties
+
+2. **High variance**:
+   - Few points per leaf → unstable accuracy estimates
+   - Wide confidence intervals
+
+3. **Unreliable statistics**:
+   - Small sample size → t-distribution less reliable
+   - Class imbalance amplified
+
+**Solutions**:
+
+**Option 1: Reduce number of trees**
+```bash
+uv run sdvaluation eval --n-estimators 100  # Fewer leaves
+```
+Fewer trees = fewer leaves = higher chance of non-empty leaves
+
+**Option 2: Simplify trees** (shallower)
+```python
+lgbm_params = {
+    'max_depth': 3,  # Shallower trees (default: 5-7)
+    'num_leaves': 8,  # Fewer leaves per tree
+}
+```
+
+**Option 3: Relax empty leaf penalty**
+```python
+run_leaf_alignment(..., empty_leaf_penalty=-0.1)  # Less harsh
+```
+
+**Option 4: Get more test data** (preferred)
+- Bootstrap test set (resample with replacement)
+- Use cross-validation folds
+- Combine multiple test sets
+
+**Recommendation**: Aim for **test set size ≥ 1,000** for reliable results.
+
+---
+
+### 8.3 Troubleshooting
+
+#### Q10: Why do I have 40% uncertain points?
+
+**Possible causes**:
+
+**1. Not enough trees** (most common)
+```bash
+# Problem: Using too few trees
+--n-estimators 100  # Results in wide CIs
+
+# Solution: Use more trees
+--n-estimators 500  # Recommended
+```
+
+**2. High variance data**
+```python
+# Check variance in your results
+import pandas as pd
+results = pd.read_csv('output.csv')
+high_variance = results[results['utility_std'] > 0.05]
+print(f"High variance points: {len(high_variance)}")
+```
+
+**Solution**:
+- Investigate why these points have high variance
+- May indicate edge cases or ambiguous regions
+- Consider marginal point filtering (see ENHANCEMENTS.md)
+
+**3. Poorly tuned hyperparameters**
+```python
+# Trees too shallow or too deep
+lgbm_params = {
+    'max_depth': 3,  # Too shallow → many ties
+    'max_depth': 10,  # Too deep → overfitting
+}
+```
+
+**Solution**: Use pre-tuned hyperparameters (see `config/lgbm_params.json`)
+
+**4. Data quality issues**
+- Synthetic data has mixed quality (some good, some bad)
+- Real test data is noisy
+
+**Diagnostic**:
+```python
+# Check distribution
+uncertain = results[(results['utility_ci_lower'] <= 0) &
+                   (results['utility_ci_upper'] >= 0)]
+print(uncertain['utility_score'].describe())  # Mean near 0?
+```
+
+**Expected**: 5-10% uncertain with 500 trees is normal.
+
+---
+
+#### Q11: All my points are harmful - what went wrong?
+
+**If 90-100% harmful**:
+
+**Likely causes**:
+
+**1. Wrong training/test split**
+```python
+# WRONG: Test on training data
+X_test = X_train  # ✗ Don't do this!
+
+# WRONG: Different distributions
+X_train = synthetic_data_from_2020
+X_test = real_data_from_2025  # Distribution shift
+```
+
+**Check**:
+```python
+# Verify data sources
+print(f"Train: {synthetic_file}")
+print(f"Test: {real_test_file}")
+# Should be from same distribution/time period
+```
+
+**2. Catastrophically bad synthetic data**
+```python
+# This is actually correct detection!
+# Gen2 example: 93% harmful is real
+```
+
+**Verify**:
+```bash
+# Check confusion matrix first
+# Train model, evaluate on test
+# If performance is terrible, synthetic data is bad
+```
+
+**3. Wrong label encoding**
+```python
+# Synthetic labels: [0, 1]
+# Real test labels: [1, 2]  # ✗ Mismatch!
+```
+
+**Check**:
+```python
+print(f"Synthetic labels: {y_synthetic.unique()}")
+print(f"Test labels: {y_test.unique()}")
+# Should both be [0, 1]
+```
+
+**4. Feature mismatch**
+```python
+# Synthetic: ['age', 'num_meds', 'diagnosis']
+# Test: ['AGE', 'NUM_MEDS', 'DIAGNOSIS']  # ✗ Case mismatch!
+```
+
+**Check**:
+```python
+print(f"Synthetic columns: {X_synthetic.columns.tolist()}")
+print(f"Test columns: {X_test.columns.tolist()}")
+# Should match exactly
+```
+
+**Baseline check**:
+```bash
+# Run on real training data as baseline
+uv run sdvaluation eval \
+  --synthetic-file real_train.csv \  # Use real as "synthetic"
+  --dseed-dir path/to/real/test
+
+# Should get ~0.25% harmful
+# If you get 90% harmful, something is wrong with setup
+```
+
+---
+
+#### Q12: My synthetic data has only one class - what do I do?
+
+**Problem**: Synthetic generator produced only Class 0 (or only Class 1)
+
+```python
+print(y_synthetic.value_counts())
+# Output:
+# 0    10000  ← Only one class!
+# 1        0
+```
+
+**Why this happens**:
+- Mode collapse in GAN
+- Severe class imbalance in training
+- Generator failure
+
+**What leaf alignment will show**:
+```
+All points will be classified as harmful (or uncertain)
+Model can only learn one decision: "always predict Class 0"
+```
+
+**Solutions**:
+
+**Option 1: Fix the generator** (preferred)
+```python
+# Check generator training
+# - Class imbalance handling
+# - Conditional generation
+# - Loss function weights
+```
+
+**Option 2: Augment with other class**
+```python
+# Mix with real data from missing class
+real_class_1 = real_data[real_data['label'] == 1]
+synthetic_augmented = pd.concat([synthetic_data, real_class_1])
+```
+
+**Option 3: Use SMOTE or oversampling**
+```python
+from imblearn.over_sampling import SMOTE
+X_resampled, y_resampled = SMOTE().fit_resample(X_synthetic, y_synthetic)
+```
+
+**Cannot proceed**: Single-class data cannot be used for binary classification training.
+
+---
+
+#### Q13: Is the empty leaf penalty too harsh/lenient?
+
+**Default**: `-1.0`
+
+**When it might be too harsh**:
+
+1. **Very small test set** (n < 500)
+   - Many leaves naturally empty
+   - Not necessarily hallucination
+
+2. **Intentional data augmentation**
+   - Synthetic data explores edges of distribution
+   - Empty leaves are by design
+
+3. **Different task** (e.g., anomaly detection)
+   - Want to generate novel regions
+
+**Solution**: Adjust penalty
+```python
+run_leaf_alignment(..., empty_leaf_penalty=-0.1)  # Less harsh
+```
+
+**When it might be too lenient**:
+
+1. **Large test set** (n > 5,000)
+   - Empty leaves are strong signal of hallucination
+   - Should be penalized more
+
+2. **Critical application**
+   - Cannot tolerate any hallucinations
+   - Medical, financial domains
+
+**Solution**: Increase penalty
+```python
+run_leaf_alignment(..., empty_leaf_penalty=-2.0)  # More harsh
+```
+
+**Calibration guide**:
+
+| Test Set Size | Recommended Penalty |
+|---------------|---------------------|
+| < 500 | -0.1 to -0.3 |
+| 500-2000 | -0.5 to -1.0 (default) |
+| 2000-5000 | -1.0 to -1.5 |
+| > 5000 | -1.5 to -2.0 |
+
+**Check if penalty matters**:
+```python
+results = pd.read_csv('output.csv')
+empty_leaf_points = results[results['utility_score'] == -1.0]
+print(f"Points with empty leaves: {len(empty_leaf_points)}")
+# If this is < 1%, penalty doesn't matter much
+```
+
+---
+
+### 8.4 Common Mistakes
+
+#### Mistake 1: Not running baseline comparison
+
+**Wrong**:
+```bash
+# Only evaluate synthetic
+uv run sdvaluation eval --synthetic-file gen2.csv ...
+# Result: 93% harmful
+# Question: Is this bad? What's the baseline?
+```
+
+**Right**:
+```bash
+# Step 1: Baseline with real training data
+uv run sdvaluation eval \
+  --synthetic-file real_train.csv \
+  --output baseline.csv
+
+# Step 2: Evaluate synthetic
+uv run sdvaluation eval \
+  --synthetic-file gen2.csv \
+  --output gen2.csv
+
+# Step 3: Compare
+# Real: 0.25% harmful
+# Gen2: 93.39% harmful
+# Ratio: 373× worse!
+```
+
+---
+
+#### Mistake 2: Ignoring class-specific breakdown
+
+**Wrong**:
+```python
+# Only look at overall stats
+print("Overall: 50% harmful")
+# Conclusion: Mediocre quality
+```
+
+**Right**:
+```python
+# Check class-specific
+print("Negative class: 10% harmful")  # Good!
+print("Positive class: 90% harmful")  # Terrible!
+# Conclusion: Minority class failed, unusable
+```
+
+**Why it matters**: Asymmetric failure often means minority class (positive) is catastrophically bad while majority class (negative) looks OK.
+
+---
+
+#### Mistake 3: Using wrong confidence level
+
+**Wrong**:
+```python
+# 99% confidence interval (too strict)
+t_critical = t.ppf(0.995, df=n_trees-1)  # 99%
+CI = [mean - t_critical*SE, mean + t_critical*SE]
+# Result: Many more "uncertain" classifications
+```
+
+**Right**:
+```python
+# 95% confidence interval (standard)
+t_critical = t.ppf(0.975, df=n_trees-1)  # 95%
+CI = [mean - t_critical*SE, mean + t_critical*SE]
+```
+
+**Why**: 95% is standard in statistics. 99% is too conservative for this application.
+
+---
+
+#### Mistake 4: Filtering without checking absolute counts
+
+**Wrong**:
+```python
+# 93% harmful, filter those out
+filtered = synthetic_data[results['utility_ci_upper'] >= 0]
+print(f"Kept: {len(filtered)} points")  # 700 points
+# Think: "I have 700 points to use!"
+```
+
+**Right**:
+```python
+# Check how many are actually beneficial
+beneficial = results[results['utility_ci_lower'] > 0]
+print(f"Beneficial: {len(beneficial)}")  # Only 54 points!
+# Realize: Only 54 points are actually useful
+# Conclusion: Not enough data to train on
+```
+
+---
+
+### 8.5 When Results Look Suspicious
+
+**Red flags**:
+
+1. **100% harmful or 100% beneficial**
+   - Check: Data loading errors?
+   - Check: Label encoding correct?
+   - Check: Using right test set?
+
+2. **All points have identical scores**
+   - Check: Model actually trained?
+   - Check: Features have variance?
+   - Check: Not using constant predictors?
+
+3. **Scores outside expected range**
+   - Utility scores should be in [-1.0, +0.5]
+   - If outside: Code bug or data corruption
+
+4. **Baseline (real data) shows >10% harmful**
+   - Real training data should be ~0.25% harmful
+   - If not: Wrong test set or setup issue
+
+**Always sanity check**:
+```python
+# 1. Check data loaded correctly
+print(f"Synthetic shape: {X_synthetic.shape}")
+print(f"Test shape: {X_test.shape}")
+
+# 2. Check label distribution
+print(f"Synthetic labels: {y_synthetic.value_counts()}")
+print(f"Test labels: {y_test.value_counts()}")
+
+# 3. Check model trained
+print(f"Number of trees: {model.n_estimators}")
+print(f"Tree depths: {[tree.max_depth for tree in model]}")
+
+# 4. Check results reasonable
+print(f"Utility range: [{results['utility_score'].min():.2f}, "
+      f"{results['utility_score'].max():.2f}]")
+print(f"Expected: [-1.0, +0.5]")
+```
+
+---
+
+### 8.6 Getting Help
+
+**Documentation**:
+- This guide (LEAF_ALIGNMENT_DEEP_DIVE.md)
+- ENHANCEMENTS.md for marginal point classification
+- README.md for basic usage
+
+**Example runs**:
+```bash
+# See examples/ directory for:
+# - Sample data
+# - Expected outputs
+# - Common scenarios
+```
+
+**Debugging checklist**:
+```
+□ Ran baseline comparison with real training data
+□ Checked class-specific breakdown
+□ Verified data loading (shapes, labels)
+□ Confirmed feature names match
+□ Used recommended n_estimators (500)
+□ Compared with confusion matrix results
+□ Checked for suspicious patterns (all same, out of range)
+```
+
+**Still stuck?**
+- Check GitHub issues: https://github.com/anthropics/sdvaluation/issues
+- Review this FAQ section carefully
+- Compare your setup with working examples
+
+**What's Next?**
+
+Section 9 provides appendices including mathematical derivations, code walkthrough, and glossary of terms.
+
