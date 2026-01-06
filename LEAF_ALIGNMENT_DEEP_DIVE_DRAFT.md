@@ -4134,3 +4134,709 @@ print(f"Expected: [-1.0, +0.5]")
 
 Section 9 provides appendices including mathematical derivations, code walkthrough, and glossary of terms.
 
+---
+
+## Section 9: Appendices
+
+This section provides supplementary technical details, mathematical derivations, and reference materials.
+
+### 9.1 Mathematical Derivations
+
+#### A. Leaf Value Computation in LightGBM
+
+**Gradient Boosting Framework**:
+
+LightGBM minimizes a loss function by iteratively adding trees. For binary classification with log loss:
+
+```
+Loss = -Σ[y_i × log(p_i) + (1 - y_i) × log(1 - p_i)]
+```
+
+where:
+- `y_i` ∈ {0, 1} is the true label
+- `p_i` = probability of Class 1
+- Working in log-odds space: `f_i = log(p_i / (1 - p_i))`
+
+**First and Second Derivatives**:
+
+For point i with current prediction `f_i`:
+
+1. **Gradient** (first derivative):
+   ```
+   g_i = ∂Loss/∂f_i = p_i - y_i
+   ```
+
+   Where `p_i = sigmoid(f_i) = 1 / (1 + exp(-f_i))`
+
+2. **Hessian** (second derivative):
+   ```
+   h_i = ∂²Loss/∂f_i² = p_i × (1 - p_i)
+   ```
+
+**Leaf Value Formula**:
+
+For a leaf containing points {i₁, i₂, ..., iₖ}:
+
+```
+leaf_value = -Σ(gradients) / (Σ(hessians) + λ)
+           = -(g_i₁ + g_i₂ + ... + g_iₖ) / (h_i₁ + h_i₂ + ... + h_iₖ + λ)
+```
+
+Where `λ` is the L2 regularization parameter (default: 0.1 in LightGBM).
+
+**Intuition**:
+- Numerator: Sum of residuals (how wrong current predictions are)
+- Denominator: Weighted count + regularization
+- Negative sign: Moving in direction that reduces loss
+- Result: Update to add to current log-odds prediction
+
+**Example Calculation**:
+
+Leaf with 3 points:
+```
+Point 1: y=1, f=+0.2 → p=sigmoid(0.2)=0.55 → g=0.55-1=-0.45, h=0.55×0.45=0.2475
+Point 2: y=1, f=+0.3 → p=sigmoid(0.3)=0.57 → g=0.57-1=-0.43, h=0.57×0.43=0.2451
+Point 3: y=0, f=+0.1 → p=sigmoid(0.1)=0.52 → g=0.52-0=+0.52, h=0.52×0.48=0.2496
+
+Σ(gradients) = -0.45 + (-0.43) + 0.52 = -0.36
+Σ(hessians) = 0.2475 + 0.2451 + 0.2496 = 0.7422
+
+leaf_value = -(-0.36) / (0.7422 + 0.1)
+           = 0.36 / 0.8422
+           = +0.427
+```
+
+This positive leaf value indicates the leaf predicts Class 1.
+
+---
+
+#### B. Standard Error and Confidence Intervals
+
+**Population vs Sample**:
+
+When we run leaf alignment with n trees, we get n utility measurements per point. These are a **sample** of possible measurements we could get with different tree configurations.
+
+**Standard Error Formula**:
+
+```
+SE = σ / √n
+```
+
+Where:
+- `σ` = standard deviation of utility scores across trees
+- `n` = number of trees
+- `SE` = standard error of the mean
+
+**Why √n?**
+
+This comes from the **Central Limit Theorem**. The variance of the sample mean is:
+
+```
+Var(X̄) = Var(X) / n = σ² / n
+
+SE = √Var(X̄) = √(σ² / n) = σ / √n
+```
+
+**Example**:
+```
+utility_scores = [-0.023, -0.019, -0.025, -0.021, ...]  # 500 values
+mean = -0.022
+std = 0.0043
+n = 500
+
+SE = 0.0043 / √500
+   = 0.0043 / 22.36
+   = 0.000192
+```
+
+**Confidence Interval Calculation**:
+
+For 95% confidence with t-distribution:
+
+```
+CI = mean ± t_critical × SE
+```
+
+Where `t_critical` depends on degrees of freedom (df = n - 1):
+
+```python
+from scipy.stats import t
+t_critical = t.ppf(0.975, df=499)  # 95% CI, two-tailed
+# t_critical ≈ 1.965 (close to 1.96 for normal distribution)
+
+CI_lower = mean - t_critical × SE
+         = -0.022 - 1.965 × 0.000192
+         = -0.022 - 0.000377
+         = -0.0224
+
+CI_upper = mean + t_critical × SE
+         = -0.022 + 0.000377
+         = -0.0216
+
+CI = [-0.0224, -0.0216]
+```
+
+Since both bounds are negative (`CI_upper < 0`), this point is **reliably harmful**.
+
+---
+
+#### C. t-Distribution vs Normal Distribution
+
+**Why t-distribution?**
+
+The t-distribution accounts for uncertainty in estimating the population standard deviation from a sample.
+
+**Key differences**:
+
+1. **Shape**: t-distribution has heavier tails than normal
+   - Higher probability of extreme values
+   - More conservative confidence intervals
+
+2. **Degrees of freedom**: As df → ∞, t → normal
+   ```
+   df = 10:   t_0.975 ≈ 2.228
+   df = 50:   t_0.975 ≈ 2.009
+   df = 100:  t_0.975 ≈ 1.984
+   df = 500:  t_0.975 ≈ 1.965
+   df = ∞:    t_0.975 = 1.960  (normal)
+   ```
+
+3. **When to use**:
+   - Sample size < 30: Definitely use t
+   - 30 ≤ sample size < 100: Prefer t
+   - Sample size ≥ 100: t ≈ normal (minimal difference)
+   - **Our case** (500 trees): t ≈ normal, but we use t for correctness
+
+**Why NOT because of skewness**:
+
+Common misconception: "t-distribution is for skewed data"
+- **Wrong**: t-distribution assumes normality of sampling distribution
+- **Right**: t-distribution accounts for sample size uncertainty
+
+Our utility scores per point may have any distribution, but the **mean** across 500 trees approaches normal (Central Limit Theorem).
+
+---
+
+#### D. Diminishing Returns with More Trees
+
+**The √n Law**:
+
+Standard error decreases as `1/√n`:
+
+```
+SE₅₀₀ / SE₁₀₀₀ = (σ/√500) / (σ/√1000)
+                 = √1000 / √500
+                 = √2
+                 ≈ 1.414
+```
+
+Doubling trees gives only 1.41× improvement in SE.
+
+**CI Width Improvement**:
+
+```
+CI_width = 2 × t_critical × SE ∝ 1/√n
+
+Doubling trees:
+  New width = Old width / √2 ≈ 0.707 × Old width
+```
+
+**Runtime Cost**:
+
+Linear with number of trees:
+```
+Runtime ∝ n
+```
+
+**Efficiency Ratio**:
+
+```
+Cost per unit improvement = Runtime increase / SE reduction
+                          = 2 / 1.414
+                          ≈ 1.41
+
+Each doubling costs 2× but only improves by 1.41×
+```
+
+**Optimal Choice**:
+
+Balance between:
+- Statistical confidence (want more trees)
+- Computational cost (want fewer trees)
+- Practical needs (how tight do CIs need to be?)
+
+**Rule of thumb**: 500 trees is the sweet spot for most applications.
+
+---
+
+### 9.2 Code Walkthrough
+
+This section explains key parts of the leaf alignment implementation.
+
+#### Key Functions
+
+**1. `run_leaf_alignment()` - Main entry point**
+
+Location: `sdvaluation/leaf_alignment.py:298`
+
+```python
+def run_leaf_alignment(
+    X_synthetic: pd.DataFrame,
+    y_synthetic: pd.Series,
+    X_real_test: pd.DataFrame,
+    y_real_test: pd.Series,
+    lgbm_params: Dict,
+    output_file: Optional[Path] = None,
+    n_estimators: int = 500,
+    empty_leaf_penalty: float = -1.0,
+    n_jobs: int = 1,
+    random_state: int = 42,
+) -> Dict:
+```
+
+**What it does**:
+1. Trains LightGBM model on synthetic data
+2. Gets leaf assignments for both synthetic and real test data
+3. Calculates leaf utilities
+4. Assigns utilities to synthetic points
+5. Computes confidence intervals
+6. Classifies points as harmful/uncertain/beneficial
+
+---
+
+**2. `calculate_leaf_utility()` - Core utility calculation**
+
+Location: `sdvaluation/leaf_alignment.py:150` (approximate)
+
+```python
+def calculate_leaf_utility(
+    y_true: np.ndarray,
+    leaf_value: float
+) -> float:
+    """
+    Calculate utility of a leaf based on real test data.
+
+    Args:
+        y_true: True labels of real test points in this leaf
+        leaf_value: The leaf's prediction (log-odds)
+
+    Returns:
+        Utility score in range [-0.5, +0.5]
+    """
+    # Determine predicted class from log-odds
+    predicted_class = 1 if leaf_value > 0 else 0
+
+    # Calculate accuracy on real test data
+    accuracy = np.mean(y_true == predicted_class)
+
+    # Center around 0: utility = accuracy - 0.5
+    utility = accuracy - 0.5
+
+    return utility
+```
+
+**Example trace**:
+```python
+# Leaf 237: leaf_value = +0.3 (predicts Class 1)
+# Real test points in leaf: [0, 0, 1, 0, 1, 0, 0]
+predicted_class = 1  # Since +0.3 > 0
+accuracy = np.mean([0,0,1,0,1,0,0] == 1)
+         = np.mean([False, False, True, False, True, False, False])
+         = 2/7
+         = 0.286
+utility = 0.286 - 0.5 = -0.214  # Harmful!
+```
+
+---
+
+**3. `compute_confidence_intervals()` - Statistical aggregation**
+
+Location: `sdvaluation/leaf_alignment.py:200` (approximate)
+
+```python
+def compute_confidence_intervals(
+    utility_per_tree: np.ndarray,
+    confidence_level: float = 0.95
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Compute mean, SE, and confidence intervals across trees.
+
+    Args:
+        utility_per_tree: Shape [n_points, n_trees]
+        confidence_level: Default 0.95 (95%)
+
+    Returns:
+        mean, se, ci_lower, ci_upper (all shape [n_points])
+    """
+    n_trees = utility_per_tree.shape[1]
+
+    # Mean and standard deviation across trees
+    mean = np.mean(utility_per_tree, axis=1)
+    std = np.std(utility_per_tree, axis=1, ddof=1)
+
+    # Standard error
+    se = std / np.sqrt(n_trees)
+
+    # t-distribution critical value
+    from scipy.stats import t
+    t_critical = t.ppf((1 + confidence_level) / 2, df=n_trees - 1)
+
+    # Confidence intervals
+    margin = t_critical * se
+    ci_lower = mean - margin
+    ci_upper = mean + margin
+
+    return mean, se, ci_lower, ci_upper
+```
+
+---
+
+**4. Data Flow Diagram**
+
+```
+Input:
+  X_synthetic [n_synth, n_features]
+  y_synthetic [n_synth]
+  X_real_test [n_real, n_features]
+  y_real_test [n_real]
+         ↓
+    Train LightGBM
+  (n_estimators trees)
+         ↓
+    Get leaf assignments
+  synth_leaves [n_synth, n_trees]
+  real_leaves [n_real, n_trees]
+         ↓
+  For each tree k:
+    For each leaf ℓ:
+      1. Get real points in leaf: y_real_in_leaf
+      2. Calculate utility_ℓ
+      3. Assign to synthetic points in leaf
+         ↓
+    utility_per_tree [n_synth, n_trees]
+         ↓
+  Aggregate across trees (axis=1):
+    mean [n_synth]
+    se [n_synth]
+    ci_lower [n_synth]
+    ci_upper [n_synth]
+         ↓
+  Classification:
+    if ci_upper < 0: "harmful"
+    elif ci_lower > 0: "beneficial"
+    else: "uncertain"
+         ↓
+    Output results
+```
+
+---
+
+### 9.3 Glossary of Terms
+
+**Beneficial (Reliably)**
+: A synthetic point whose confidence interval is entirely positive (`CI_lower > 0`), indicating it consistently creates decision boundaries that correctly classify real test data.
+
+**Confidence Interval (CI)**
+: A range of values that likely contains the true mean utility, calculated as `mean ± t_critical × SE`. For 95% confidence, we expect the true value to fall within this range 95% of the time.
+
+**Co-occurrence**
+: The phenomenon where both synthetic training points and real test points land in the same leaf of a decision tree. This allows us to evaluate if synthetic points create useful decision boundaries.
+
+**Decision Boundary**
+: The learned rule that separates classes in feature space. In tree-based models, boundaries are axis-aligned splits.
+
+**Empty Leaf**
+: A leaf that contains synthetic training points but zero real test points, indicating the synthetic data created a region of feature space that doesn't exist in real data (hallucination).
+
+**Empty Leaf Penalty**
+: A negative utility score (default: -1.0) assigned to synthetic points in empty leaves to penalize hallucinated feature combinations.
+
+**Gradient**
+: The first derivative of the loss function with respect to the current prediction. Indicates the direction to move predictions to reduce loss.
+
+**Hallucinated Data**
+: Synthetic data points that represent impossible or extremely rare feature combinations not present in real data, often indicated by landing in empty leaves.
+
+**Harmful (Reliably)**
+: A synthetic point whose confidence interval is entirely negative (`CI_upper < 0`), indicating it consistently creates decision boundaries that misclassify real test data.
+
+**Hessian**
+: The second derivative of the loss function. Used in gradient boosting to determine step size for updates.
+
+**Leaf**
+: A terminal node in a decision tree containing:
+  - `leaf_index`: Unique identifier
+  - `leaf_value`: Predicted log-odds for classification
+  - Points that satisfy all splits along the path to this leaf
+
+**Leaf Alignment**
+: The methodology of evaluating synthetic data quality by checking if decision boundaries learned from synthetic data align with (correctly classify) real test data patterns.
+
+**Leaf Utility**
+: A score measuring how well a leaf performs on real test data:
+  ```
+  utility = accuracy - 0.5
+  ```
+  Range: [-0.5, +0.5] where 0 = random guessing.
+
+**Leaf Value**
+: The prediction output by a leaf in LightGBM, representing a log-odds contribution to the final prediction. Computed from gradients and hessians.
+
+**Log-odds (Logit)**
+: The logarithm of the odds ratio: `log(p / (1-p))` where p is probability. Used in gradient boosting for its mathematical properties (unbounded, additive, symmetric).
+
+**Marginal Point**
+: A point that is statistically significant (CI doesn't span 0) but has practically small effect size (mean near 0). Example: mean = +0.0008 is "reliably beneficial" but weak.
+
+**Standard Error (SE)**
+: The standard deviation of the sampling distribution of the mean: `SE = σ / √n`. Smaller SE means more precise estimate of the mean.
+
+**t-distribution**
+: A probability distribution used for confidence intervals when sample size is finite and population standard deviation is unknown. Approaches normal distribution as sample size increases.
+
+**Uncertain**
+: A synthetic point whose confidence interval spans zero (`CI_lower ≤ 0 and CI_upper ≥ 0`), indicating trees disagree on whether it's beneficial or harmful.
+
+**Utility Score**
+: The mean utility of a synthetic point across all trees. Positive = beneficial, negative = harmful, magnitude = strength of effect.
+
+**Weighted Utility**
+: Leaf utility multiplied by the proportion of real test data in that leaf, accounting for the importance/representativeness of the decision region.
+
+---
+
+### 9.4 Common Notation Reference
+
+| Symbol | Meaning | Example |
+|--------|---------|---------|
+| **n** | Number of samples | n = 10,000 synthetic points |
+| **m** | Number of features | m = 15 features |
+| **k** | Number of trees | k = 500 trees |
+| **ℓ** | Leaf index | ℓ = 237 |
+| **X** | Feature matrix | X_synthetic, X_real_test |
+| **y** | Label vector | y ∈ {0, 1} |
+| **f** | Log-odds prediction | f = log(p/(1-p)) |
+| **p** | Probability | p = P(y=1|x) |
+| **g** | Gradient | g = ∂Loss/∂f |
+| **h** | Hessian | h = ∂²Loss/∂f² |
+| **λ** | Regularization | λ = 0.1 (default) |
+| **σ** | Standard deviation | σ = std(utility) |
+| **μ** | Mean | μ = mean(utility) |
+| **SE** | Standard error | SE = σ/√n |
+| **CI** | Confidence interval | CI = [μ - t·SE, μ + t·SE] |
+| **t** | t-statistic | t_critical for 95% CI |
+
+---
+
+### 9.5 Example Data: MIMIC-III Readmission Task
+
+**Dataset Description**:
+
+- **Source**: MIMIC-III Clinical Database
+- **Task**: Predict 30-day hospital readmission (binary classification)
+- **Features**: 15 clinical variables (age, diagnoses, medications, procedures)
+- **Sample size**: 10,000 training, 8,000 test
+
+**Feature Summary**:
+
+| Feature | Type | Range | Description |
+|---------|------|-------|-------------|
+| AGE | Continuous | 18-90 | Patient age in years |
+| GENDER | Binary | 0/1 | 0=Male, 1=Female |
+| NUM_MEDS | Count | 0-30 | Number of medications |
+| NUM_PROCEDURES | Count | 0-15 | Number of procedures |
+| LOS_DAYS | Continuous | 1-60 | Length of stay |
+| DIAGNOSIS_* | Binary | 0/1 | 10 diagnosis categories |
+
+**Class Distribution**:
+
+```
+Training:
+  Class 0 (No readmit):  8,997 (89.97%)
+  Class 1 (Readmit):     1,003 (10.03%)  ← Imbalanced!
+
+Test:
+  Class 0: 7,200 (90%)
+  Class 1:   800 (10%)
+```
+
+**Baseline Performance** (Real training data):
+
+```
+Precision: 18.34%
+Recall:    39.96%
+F1 Score:  25.14%
+```
+
+**Leaf Alignment Baseline** (Real training data):
+
+```
+Reliably harmful:        25 (0.25%)
+Reliably beneficial:  8,969 (89.69%)
+Uncertain:            1,006 (10.06%)
+```
+
+**Why this task is challenging**:
+- Severe class imbalance (10:1 ratio)
+- Minority class (readmission) is harder to predict
+- Complex feature interactions
+- Noisy labels (some readmissions are random)
+
+This makes it an ideal test for synthetic data quality: synthetic generators often fail on imbalanced minority classes, as demonstrated by Gen2 (0% beneficial in positive class).
+
+---
+
+### 9.6 Configuration Files
+
+**LightGBM Parameters** (`config/lgbm_params.json`):
+
+```json
+{
+  "objective": "binary",
+  "metric": "binary_logloss",
+  "boosting_type": "gbdt",
+  "num_leaves": 31,
+  "max_depth": 5,
+  "learning_rate": 0.05,
+  "feature_fraction": 0.8,
+  "bagging_fraction": 0.8,
+  "bagging_freq": 5,
+  "min_data_in_leaf": 20,
+  "lambda_l1": 0.0,
+  "lambda_l2": 0.1,
+  "min_gain_to_split": 0.0,
+  "verbose": -1
+}
+```
+
+**Key parameters for leaf alignment**:
+- `num_leaves`: Controls tree complexity (more leaves = finer boundaries)
+- `max_depth`: Limits tree depth (prevents overfitting)
+- `min_data_in_leaf`: Minimum points per leaf (affects empty leaf rate)
+- `lambda_l2`: Regularization (shrinks leaf values toward 0)
+
+**Encoding Configuration** (`config/encoding.yaml`):
+
+Specifies how to handle categorical variables and missing values during data preprocessing.
+
+---
+
+### 9.7 References and Further Reading
+
+**Gradient Boosting**:
+- Friedman, J. H. (2001). "Greedy function approximation: A gradient boosting machine." Annals of Statistics.
+- Ke, G. et al. (2017). "LightGBM: A highly efficient gradient boosting decision tree." NeurIPS.
+
+**Data Valuation**:
+- Ghorbani, A. & Zou, J. (2019). "Data Shapley: Equitable valuation of data for machine learning." ICML.
+- Jia, R. et al. (2019). "Towards efficient data valuation based on the Shapley value." AISTATS.
+
+**Synthetic Data Evaluation**:
+- Choi, E. et al. (2017). "Generating multi-label discrete patient records using generative adversarial networks." Machine Learning for Healthcare.
+- Dankar, F. K. & Ibrahim, M. (2021). "Fake it till you make it: Guidelines for effective synthetic data generation." Applied Sciences.
+
+**Statistical Methods**:
+- Wasserman, L. (2004). "All of Statistics: A Concise Course in Statistical Inference." Springer.
+- Student (1908). "The probable error of a mean." Biometrika. (Original t-distribution paper)
+
+**LightGBM Documentation**:
+- Official docs: https://lightgbm.readthedocs.io/
+- Parameters: https://lightgbm.readthedocs.io/en/latest/Parameters.html
+- Python API: https://lightgbm.readthedocs.io/en/latest/Python-API.html
+
+---
+
+### 9.8 Related Tools and Extensions
+
+**Synthetic Data Generators**:
+- **SynthCity**: Comprehensive library for time-series synthetic data
+- **CTGAN**: Conditional Tabular GAN
+- **TVAE**: Table Variational Autoencoder
+- **SMOTE**: Synthetic Minority Over-sampling Technique
+
+**Alternative Evaluation Methods**:
+- **Data Shapley**: Point-level valuation via marginal contribution
+- **Influence Functions**: Gradient-based data importance
+- **Distribution Metrics**: KL divergence, Wasserstein distance
+
+**Complementary Tools**:
+- **SDMetrics**: Synthetic data quality metrics
+- **Table-Evaluator**: Statistical and ML-based evaluation
+- **Privacy Metrics**: k-anonymity, l-diversity, differential privacy
+
+---
+
+### 9.9 Citing This Work
+
+If you use leaf alignment methodology in your research, please cite:
+
+```bibtex
+@software{sdvaluation2024,
+  title={sdvaluation: Synthetic Data Evaluation via Leaf Alignment},
+  author={[Author names]},
+  year={2024},
+  url={https://github.com/[org]/sdvaluation}
+}
+```
+
+---
+
+### 9.10 Version History
+
+**Current Version**: See `pyproject.toml` for version number
+
+**Key Updates**:
+- Initial release with leaf alignment implementation
+- Added class-specific analysis
+- Enhanced statistical confidence intervals
+- Documentation improvements
+
+---
+
+## Conclusion
+
+This deep dive has covered the complete leaf alignment methodology, from basic concepts to advanced applications. Key takeaways:
+
+1. **Core Idea**: Evaluate synthetic data by checking if learned decision boundaries generalize to real test data
+
+2. **Statistical Rigor**: Use 500 trees for independent measurements, compute confidence intervals for reliable classifications
+
+3. **Practical Application**:
+   - Real data: ~0.25% harmful (baseline)
+   - Good synthetic: 2-10% harmful
+   - Bad synthetic: >70% harmful (reject)
+
+4. **Complementary Methods**: Use with confusion matrices and (optionally) Data Shapley for complete picture
+
+5. **Class-Specific Analysis**: Always check minority class separately - asymmetric failures are common
+
+6. **Key Insight**: Individual plausibility ≠ Collective quality. Points can look fine individually but fail collectively.
+
+**Next Steps**:
+- Apply to your synthetic data evaluation tasks
+- Refer to ENHANCEMENTS.md for advanced features
+- Check FAQ section for troubleshooting
+- Review code walkthrough for implementation details
+
+**Questions or Issues?**
+- See Section 8.6 for getting help
+- Review this guide for comprehensive coverage
+- Check GitHub issues for known problems
+
+---
+
+**End of Document**
+
+Total Sections:
+1. Introduction & Overview
+2. The Methodology: Step-by-Step
+3. Core Concepts
+4. Comprehensive Worked Example
+5. Advanced Topics
+6. Practical Application
+7. Comparisons with Other Methods
+8. FAQs & Troubleshooting
+9. Appendices
+
+This guide provides complete coverage of leaf alignment for evaluating synthetic data quality, suitable for researchers, practitioners, and responding to reviewers.
+
