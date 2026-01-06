@@ -1383,3 +1383,441 @@ Synth#42 (Reliably Harmful):
 
 Section 4 provides a comprehensive worked example, walking through the entire process with concrete numbers for a small dataset.
 
+---
+
+## 4. Comprehensive Worked Example
+
+This section walks through the **entire leaf alignment process** with a small, concrete dataset. We'll compute every number step-by-step so you can see exactly how the algorithm works.
+
+### 4.1 The Setup
+
+**Task**: Hospital readmission prediction (binary classification)
+- **Target variable**: `IS_READMISSION_30D` (0 = no readmission, 1 = readmission)
+- **Features**: AGE, DIAGNOSIS, NUM_MEDS
+
+**Datasets**:
+- **Synthetic training data**: 10 points
+- **Real test data**: 8 points
+- **Model**: LightGBM with `n_estimators=3` (we'll use just 3 trees for clarity)
+
+### 4.2 The Data
+
+#### Synthetic Training Data (10 points)
+
+```
+┌─────────┬─────┬───────────┬──────────┬──────────────────────┐
+│ Index   │ AGE │ DIAGNOSIS │ NUM_MEDS │ IS_READMISSION_30D   │
+├─────────┼─────┼───────────┼──────────┼──────────────────────┤
+│ Synth#0 │ 70  │ Diabetes  │ 3        │ 1 (readmitted)      │
+│ Synth#1 │ 55  │ Heart     │ 2        │ 0 (no readmit)      │
+│ Synth#2 │ 80  │ Cancer    │ 8        │ 0 (no readmit)      │
+│ Synth#3 │ 60  │ Heart     │ 1        │ 0 (no readmit)      │
+│ Synth#4 │ 72  │ Heart     │ 4        │ 1 (readmitted)      │
+│ Synth#5 │ 45  │ Diabetes  │ 2        │ 1 (readmitted)      │
+│ Synth#6 │ 68  │ Cancer    │ 7        │ 0 (no readmit)      │
+│ Synth#7 │ 75  │ Heart     │ 5        │ 1 (readmitted)      │
+│ Synth#8 │ 50  │ Heart     │ 1        │ 0 (no readmit)      │
+│ Synth#9 │ 82  │ Diabetes  │ 9        │ 0 (no readmit)      │
+└─────────┴─────┴───────────┴──────────┴──────────────────────┘
+```
+
+#### Real Test Data (8 points)
+
+```
+┌─────────┬─────┬───────────┬──────────┬──────────────────────┐
+│ Index   │ AGE │ DIAGNOSIS │ NUM_MEDS │ IS_READMISSION_30D   │
+├─────────┼─────┼───────────┼──────────┼──────────────────────┤
+│ Real#A  │ 71  │ Diabetes  │ 5        │ 1 (readmitted)      │
+│ Real#B  │ 58  │ Heart     │ 1        │ 0 (no readmit)      │
+│ Real#C  │ 77  │ Cancer    │ 9        │ 1 (readmitted)      │
+│ Real#D  │ 62  │ Heart     │ 2        │ 0 (no readmit)      │
+│ Real#E  │ 73  │ Diabetes  │ 4        │ 1 (readmitted)      │
+│ Real#F  │ 48  │ Diabetes  │ 3        │ 0 (no readmit)      │
+│ Real#G  │ 69  │ Cancer    │ 7        │ 1 (readmitted)      │
+│ Real#H  │ 52  │ Heart     │ 1        │ 0 (no readmit)      │
+└─────────┴─────┴───────────┴──────────┴──────────────────────┘
+```
+
+### 4.3 Tree #0: Structure and Leaf Values
+
+After training on synthetic data, LightGBM produces this tree:
+
+```
+                    [Root: AGE <= 65?]
+                    /                 \
+                  YES                 NO
+             (AGE <= 65)          (AGE > 65)
+                   |                   |
+        [DIAGNOSIS="Heart"?]    [NUM_MEDS <= 5?]
+           /        \              /          \
+         YES        NO           YES          NO
+          |          |            |            |
+      LEAF 0     LEAF 1       LEAF 2       LEAF 3
+   value=-0.8  value=+0.3   value=+0.6   value=-0.4
+   Class 0     Class 1      Class 1      Class 0
+```
+
+**Leaf Values** (computed by LightGBM from synthetic training data):
+- LEAF 0: `leaf_value = -0.8` → predicts Class 0 (no readmit)
+- LEAF 1: `leaf_value = +0.3` → predicts Class 1 (readmit)
+- LEAF 2: `leaf_value = +0.6` → predicts Class 1 (readmit)
+- LEAF 3: `leaf_value = -0.4` → predicts Class 0 (no readmit)
+
+### 4.4 Step 1: Pass Synthetic Data Through Tree #0
+
+Let's trace where each synthetic point lands:
+
+```
+Synth#0: AGE=70 → NO  → NUM_MEDS=3 ≤ 5 → YES  → LEAF 2
+Synth#1: AGE=55 → YES → DIAGNOSIS=Heart → YES  → LEAF 0
+Synth#2: AGE=80 → NO  → NUM_MEDS=8 ≤ 5 → NO   → LEAF 3
+Synth#3: AGE=60 → YES → DIAGNOSIS=Heart → YES  → LEAF 0
+Synth#4: AGE=72 → NO  → NUM_MEDS=4 ≤ 5 → YES  → LEAF 2
+Synth#5: AGE=45 → YES → DIAGNOSIS=Diabetes → NO → LEAF 1
+Synth#6: AGE=68 → NO  → NUM_MEDS=7 ≤ 5 → NO   → LEAF 3
+Synth#7: AGE=75 → NO  → NUM_MEDS=5 ≤ 5 → YES  → LEAF 2
+Synth#8: AGE=50 → YES → DIAGNOSIS=Heart → YES  → LEAF 0
+Synth#9: AGE=82 → NO  → NUM_MEDS=9 ≤ 5 → NO   → LEAF 3
+```
+
+**Synthetic Leaf Assignments** (Tree #0):
+```python
+synthetic_leaves_tree0 = [2, 0, 3, 0, 2, 1, 3, 2, 0, 3]
+#                        ↑  ↑  ↑  ↑  ↑  ↑  ↑  ↑  ↑  ↑
+#                        #0 #1 #2 #3 #4 #5 #6 #7 #8 #9
+```
+
+### 4.5 Step 2: Pass Real Test Data Through Tree #0
+
+```
+Real#A: AGE=71 → NO  → NUM_MEDS=5 ≤ 5 → YES  → LEAF 2
+Real#B: AGE=58 → YES → DIAGNOSIS=Heart → YES  → LEAF 0
+Real#C: AGE=77 → NO  → NUM_MEDS=9 ≤ 5 → NO   → LEAF 3
+Real#D: AGE=62 → YES → DIAGNOSIS=Heart → YES  → LEAF 0
+Real#E: AGE=73 → NO  → NUM_MEDS=4 ≤ 5 → YES  → LEAF 2
+Real#F: AGE=48 → YES → DIAGNOSIS=Diabetes → NO → LEAF 1
+Real#G: AGE=69 → NO  → NUM_MEDS=7 ≤ 5 → NO   → LEAF 3
+Real#H: AGE=52 → YES → DIAGNOSIS=Heart → YES  → LEAF 0
+```
+
+**Real Leaf Assignments** (Tree #0):
+```python
+real_leaves_tree0 = [2, 0, 3, 0, 2, 1, 3, 0]
+#                   ↑  ↑  ↑  ↑  ↑  ↑  ↑  ↑
+#                   A  B  C  D  E  F  G  H
+```
+
+### 4.6 Step 3: Co-Occurrence Summary
+
+```
+┌────────┬──────────────────┬─────────────────────────┬────────────┐
+│ Leaf   │ Synthetic Points │ Real Points (labels)    │ Leaf Value │
+├────────┼──────────────────┼─────────────────────────┼────────────┤
+│ LEAF 0 │ #1, #3, #8       │ B(0), D(0), H(0)       │ -0.8       │
+│ LEAF 1 │ #5               │ F(0)                    │ +0.3       │
+│ LEAF 2 │ #0, #4, #7       │ A(1), E(1)             │ +0.6       │
+│ LEAF 3 │ #2, #6, #9       │ C(1), G(1)             │ -0.4       │
+└────────┴──────────────────┴─────────────────────────┴────────────┘
+```
+
+### 4.7 Step 4: Calculate Leaf Utility
+
+#### LEAF 0 ✓✓✓
+
+```python
+# What does this leaf predict?
+leaf_value = -0.8
+predicted_class = 0  # (leaf_value < 0)
+
+# Real points in this leaf
+real_labels = [0, 0, 0]  # B, D, H (all no readmit)
+
+# Check alignment
+accuracy = np.mean([0, 0, 0] == 0) = 3/3 = 1.00
+
+# Calculate utility
+utility = 1.00 - 0.5 = +0.5  ✓ Perfect!
+
+# Weight by importance
+weight = 3 real points / 8 total = 0.375
+
+# Weighted utility
+weighted_utility = 0.5 × 0.375 = 0.1875
+```
+
+#### LEAF 1 ✗✗✗
+
+```python
+# What does this leaf predict?
+leaf_value = +0.3
+predicted_class = 1  # (leaf_value > 0)
+
+# Real points in this leaf
+real_labels = [0]  # F (no readmit)
+
+# Check alignment
+accuracy = np.mean([0] == 1) = 0/1 = 0.00
+
+# Calculate utility
+utility = 0.00 - 0.5 = -0.5  ✗ Completely wrong!
+
+# Weight by importance
+weight = 1 real point / 8 total = 0.125
+
+# Weighted utility
+weighted_utility = -0.5 × 0.125 = -0.0625
+```
+
+#### LEAF 2 ✓✓✓
+
+```python
+# What does this leaf predict?
+leaf_value = +0.6
+predicted_class = 1  # (leaf_value > 0)
+
+# Real points in this leaf
+real_labels = [1, 1]  # A, E (both readmitted)
+
+# Check alignment
+accuracy = np.mean([1, 1] == 1) = 2/2 = 1.00
+
+# Calculate utility
+utility = 1.00 - 0.5 = +0.5  ✓ Perfect!
+
+# Weight by importance
+weight = 2 real points / 8 total = 0.25
+
+# Weighted utility
+weighted_utility = 0.5 × 0.25 = 0.125
+```
+
+#### LEAF 3 ✗✗✗
+
+```python
+# What does this leaf predict?
+leaf_value = -0.4
+predicted_class = 0  # (leaf_value < 0)
+
+# Real points in this leaf
+real_labels = [1, 1]  # C, G (both readmitted)
+
+# Check alignment
+accuracy = np.mean([1, 1] == 0) = 0/2 = 0.00
+
+# Calculate utility
+utility = 0.00 - 0.5 = -0.5  ✗ Completely wrong!
+
+# Weight by importance
+weight = 2 real points / 8 total = 0.25
+
+# Weighted utility
+weighted_utility = -0.5 × 0.25 = -0.125
+```
+
+### 4.8 Step 5: Distribute Utility to Synthetic Points
+
+```python
+# LEAF 0: weighted_utility = +0.1875
+# Distribute among: Synth#1, #3, #8 (3 points)
+score_per_point = 0.1875 / 3 = 0.0625
+Synth#1 gets +0.0625
+Synth#3 gets +0.0625
+Synth#8 gets +0.0625
+
+# LEAF 1: weighted_utility = -0.0625
+# Distribute among: Synth#5 (1 point)
+score_per_point = -0.0625 / 1 = -0.0625
+Synth#5 gets -0.0625
+
+# LEAF 2: weighted_utility = +0.125
+# Distribute among: Synth#0, #4, #7 (3 points)
+score_per_point = 0.125 / 3 = 0.0417
+Synth#0 gets +0.0417
+Synth#4 gets +0.0417
+Synth#7 gets +0.0417
+
+# LEAF 3: weighted_utility = -0.125
+# Distribute among: Synth#2, #6, #9 (3 points)
+score_per_point = -0.125 / 3 = -0.0417
+Synth#2 gets -0.0417
+Synth#6 gets -0.0417
+Synth#9 gets -0.0417
+```
+
+**Scores from Tree #0**:
+
+```
+┌───────────┬──────────────┬────────────────────────────────┐
+│ Synthetic │ Utility      │ Why?                           │
+│ Point     │ (Tree #0)    │                                │
+├───────────┼──────────────┼────────────────────────────────┤
+│ Synth#0   │ +0.0417  ✓  │ LEAF 2 (good)                 │
+│ Synth#1   │ +0.0625  ✓  │ LEAF 0 (perfect!)             │
+│ Synth#2   │ -0.0417  ✗  │ LEAF 3 (bad)                  │
+│ Synth#3   │ +0.0625  ✓  │ LEAF 0 (perfect!)             │
+│ Synth#4   │ +0.0417  ✓  │ LEAF 2 (good)                 │
+│ Synth#5   │ -0.0625  ✗  │ LEAF 1 (terrible!)            │
+│ Synth#6   │ -0.0417  ✗  │ LEAF 3 (bad)                  │
+│ Synth#7   │ +0.0417  ✓  │ LEAF 2 (good)                 │
+│ Synth#8   │ +0.0625  ✓  │ LEAF 0 (perfect!)             │
+│ Synth#9   │ -0.0417  ✗  │ LEAF 3 (bad)                  │
+└───────────┴──────────────┴────────────────────────────────┘
+```
+
+### 4.9 Repeat for Trees #1 and #2
+
+For brevity, let's assume Trees #1 and #2 produce similar scores (with variation):
+
+**Tree #1 Scores**:
+```
+Synth#0: +0.0203
+Synth#1: +0.0512
+Synth#2: -0.0301
+Synth#3: +0.0598
+Synth#4: +0.0381
+Synth#5: -0.0514
+Synth#6: -0.0389
+Synth#7: +0.0299
+Synth#8: +0.0701
+Synth#9: -0.0421
+```
+
+**Tree #2 Scores**:
+```
+Synth#0: +0.0391
+Synth#1: +0.0723
+Synth#2: -0.0289
+Synth#3: +0.0681
+Synth#4: +0.0412
+Synth#5: -0.0701
+Synth#6: -0.0298
+Synth#7: +0.0365
+Synth#8: +0.0591
+Synth#9: -0.0512
+```
+
+### 4.10 Step 6: Aggregate Across All 3 Trees
+
+Now we have a utility matrix:
+
+```python
+utility_per_tree = [
+    #       Tree0   Tree1   Tree2
+    [+0.0417, +0.0203, +0.0391],  # Synth#0
+    [+0.0625, +0.0512, +0.0723],  # Synth#1
+    [-0.0417, -0.0301, -0.0289],  # Synth#2
+    [+0.0625, +0.0598, +0.0681],  # Synth#3
+    [+0.0417, +0.0381, +0.0412],  # Synth#4
+    [-0.0625, -0.0514, -0.0701],  # Synth#5
+    [-0.0417, -0.0389, -0.0298],  # Synth#6
+    [+0.0417, +0.0299, +0.0365],  # Synth#7
+    [+0.0625, +0.0701, +0.0591],  # Synth#8
+    [-0.0417, -0.0421, -0.0512],  # Synth#9
+]
+```
+
+**Compute Statistics** (example for Synth#5):
+
+```python
+# Synth#5 scores across 3 trees
+scores = [-0.0625, -0.0514, -0.0701]
+
+# Mean
+mean = (-0.0625 + -0.0514 + -0.0701) / 3 = -0.0613
+
+# Standard deviation
+std = √[((−0.0625−(−0.0613))² + (−0.0514−(−0.0613))² + (−0.0701−(−0.0613))²) / 2]
+    = √[(0.000144 + 0.000980 + 0.000774) / 2]
+    = √(0.000949)
+    = 0.0308
+
+# Standard error
+se = std / √n = 0.0308 / √3 = 0.0308 / 1.732 = 0.0178
+
+# 95% CI using t-distribution (df=2, t_critical=4.303)
+ci_lower = mean - t_critical × se
+         = -0.0613 - 4.303 × 0.0178
+         = -0.0613 - 0.0766
+         = -0.1379
+
+ci_upper = mean + t_critical × se
+         = -0.0613 + 4.303 × 0.0178
+         = -0.0613 + 0.0766
+         = +0.0153
+```
+
+**Classification for Synth#5**:
+```python
+ci_lower = -0.1379 < 0
+ci_upper = +0.0153 > 0
+# CI spans 0 → UNCERTAIN ⚠️
+```
+
+**Note**: With only 3 trees, we get wide CIs. With 500 trees:
+
+```python
+# Synth#5 with 500 trees (hypothetical)
+mean = -0.0613
+se = 0.0308 / √500 = 0.00138
+ci_lower = -0.0613 - 1.965 × 0.00138 = -0.0640
+ci_upper = -0.0613 + 1.965 × 0.00138 = -0.0586
+# ci_upper < 0 → RELIABLY HARMFUL ✗
+```
+
+### 4.11 Final Results Summary
+
+**With 3 trees** (wide CIs):
+
+```
+┌───────────┬─────────┬─────────┬────────────┬────────────┬──────────────┐
+│ Synthetic │ Mean    │ SE      │ CI_lower   │ CI_upper   │ Classification│
+├───────────┼─────────┼─────────┼────────────┼────────────┼──────────────┤
+│ Synth#0   │ +0.0337 │ 0.0061  │ +0.0074    │ +0.0600    │ BENEFICIAL ✓ │
+│ Synth#1   │ +0.0620 │ 0.0058  │ +0.0370    │ +0.0870    │ BENEFICIAL ✓ │
+│ Synth#2   │ -0.0336 │ 0.0036  │ -0.0491    │ -0.0181    │ HARMFUL ✗    │
+│ Synth#3   │ +0.0635 │ 0.0024  │ +0.0532    │ +0.0738    │ BENEFICIAL ✓ │
+│ Synth#4   │ +0.0403 │ 0.0009  │ +0.0364    │ +0.0442    │ BENEFICIAL ✓ │
+│ Synth#5   │ -0.0613 │ 0.0178  │ -0.1379    │ +0.0153    │ UNCERTAIN ⚠️ │
+│ Synth#6   │ -0.0368 │ 0.0034  │ -0.0514    │ -0.0222    │ HARMFUL ✗    │
+│ Synth#7   │ +0.0360 │ 0.0034  │ +0.0214    │ +0.0506    │ BENEFICIAL ✓ │
+│ Synth#8   │ +0.0639 │ 0.0031  │ +0.0506    │ +0.0772    │ BENEFICIAL ✓ │
+│ Synth#9   │ -0.0450 │ 0.0028  │ -0.0570    │ -0.0330    │ HARMFUL ✗    │
+└───────────┴─────────┴─────────┴────────────┴────────────┴──────────────┘
+```
+
+**Summary**:
+- **Reliably beneficial**: 6/10 (60%)
+- **Reliably harmful**: 3/10 (30%)
+- **Uncertain**: 1/10 (10%)
+
+**With 500 trees** (tighter CIs):
+- Synth#5 would likely move from "uncertain" to "reliably harmful"
+- All classifications become more confident
+- Fewer points span zero
+
+### 4.12 Key Insights from the Example
+
+1. **Synth#5 is hallucinated**:
+   - Label says "readmit" (1), but features (AGE=45, Diabetes, NUM_MEDS=2) are similar to Real#F who doesn't readmit
+   - Creates LEAF 1 which misclassifies real data
+   - Gets negative utility
+
+2. **Synth#1, #3, #8 are beneficial**:
+   - All have Heart diagnosis with AGE≤65
+   - Create LEAF 0 which perfectly classifies real patients
+   - Get strong positive utility
+
+3. **Synth#2, #6, #9 are harmful**:
+   - All land in LEAF 3 (older, many meds, predicts no readmit)
+   - But real patients with those features (Real#C, #G) DO readmit
+   - Teaches wrong patterns
+
+4. **More trees = better confidence**:
+   - With 3 trees: 10% uncertain
+   - With 500 trees: ~5% uncertain (typical)
+   - Narrower CIs allow confident classifications
+
+**What's Next?**
+
+Section 5 explores advanced topics including why we don't check synthetic label alignment, class-specific analysis, and marginal point classification.
+
