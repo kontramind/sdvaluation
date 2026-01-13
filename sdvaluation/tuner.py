@@ -1078,6 +1078,7 @@ def evaluate_synthetic(
     retune_n_trials: int = 500,
     retune_optimize_metric: str = "auroc",
     retune_threshold_metric: str = "f1",
+    test_hybrid: bool = False,
 ) -> Dict[str, Any]:
     """
     Evaluate synthetic data quality using leaf alignment.
@@ -1098,7 +1099,6 @@ def evaluate_synthetic(
         synthetic_file: Path to synthetic training CSV file
         target_column: Name of target column
         n_estimators: Number of trees for leaf alignment (more = tighter CIs)
-        n_jobs: Number of parallel jobs (1=sequential, -1=all CPUs)
         seed: Random seed
         output_file: Optional custom output path for CSV (default: dseed_dir/synthetic_evaluation.csv)
         adjust_for_imbalance: Level 2 flag
@@ -1106,6 +1106,7 @@ def evaluate_synthetic(
         retune_n_trials: Number of Bayesian trials for Level 3 (default: 500)
         retune_optimize_metric: Metric to optimize in Level 3 (default: 'auroc')
         retune_threshold_metric: Threshold metric for Level 3 (default: 'f1')
+        test_hybrid: If True, also evaluate hybrid (real + beneficial synthetic) dataset
 
     Returns:
         Dictionary with evaluation results
@@ -1872,6 +1873,128 @@ def evaluate_synthetic(
         )
         console.print(summary_table)
 
+        # ═══════════════════════════════════════════════════════════════════
+        # HYBRID TEST: Real + Beneficial Synthetic
+        # ═══════════════════════════════════════════════════════════════════
+        hybrid_metrics = None
+        if test_hybrid:
+            console.print(f"\n[bold blue]{'═' * 70}[/bold blue]")
+            console.print(f"[bold blue]{'Hybrid Dataset Evaluation':^70}[/bold blue]")
+            console.print(f"[bold blue]{'═' * 70}[/bold blue]\n")
+            console.print("[dim]Testing hybrid = Real training + Beneficial synthetic points[/dim]\n")
+
+            # Read the CSV file with leaf alignment results
+            leaf_df = pd.read_csv(output_file)
+
+            # Filter for beneficial points (CI lower > 0)
+            beneficial_mask = leaf_df['utility_ci_lower'] > 0
+            n_beneficial = beneficial_mask.sum()
+
+            if n_beneficial == 0:
+                console.print("[yellow]⚠ No beneficial points found. Skipping hybrid test.[/yellow]")
+            else:
+                # Get indices of beneficial synthetic points
+                beneficial_indices = leaf_df[beneficial_mask]['synthetic_index'].values
+
+                # Extract beneficial synthetic data
+                X_beneficial = X_synthetic.iloc[beneficial_indices].reset_index(drop=True)
+                y_beneficial = y_synthetic.iloc[beneficial_indices].reset_index(drop=True)
+
+                # Create hybrid dataset
+                X_hybrid = pd.concat([X_train, X_beneficial], ignore_index=True)
+                y_hybrid = pd.concat([y_train, y_beneficial], ignore_index=True)
+
+                # Display composition
+                console.print("[bold]Hybrid Dataset Composition:[/bold]")
+                console.print(f"  Real training points:       {len(X_train):,}")
+                console.print(f"  Beneficial synthetic:       {n_beneficial:,}")
+                console.print(f"  Total hybrid points:        {len(X_hybrid):,}")
+                console.print(f"  Beneficial percentage:      {100 * n_beneficial / len(X_hybrid):.1f}%")
+
+                # Display class distribution
+                real_pos_pct = 100 * np.sum(y_train == 1) / len(y_train)
+                hybrid_pos_pct = 100 * np.sum(y_hybrid == 1) / len(y_hybrid)
+                beneficial_pos_pct = 100 * np.sum(y_beneficial == 1) / len(y_beneficial) if len(y_beneficial) > 0 else 0
+
+                console.print(f"\n[bold]Class Distribution:[/bold]")
+                console.print(f"  Real training:              {real_pos_pct:.1f}% positive")
+                console.print(f"  Beneficial synthetic:       {beneficial_pos_pct:.1f}% positive")
+                console.print(f"  Hybrid dataset:             {hybrid_pos_pct:.1f}% positive")
+
+                # Train on hybrid and evaluate
+                console.print(f"\n[bold]Hybrid: Hybrid Training → Real Test[/bold]")
+                console.print(f"[dim]  Using real data's hyperparameters...[/dim]")
+
+                hybrid_metrics = evaluate_on_test(
+                    params=lgbm_params,
+                    X_train=X_hybrid,
+                    y_train=y_hybrid,
+                    X_test=X_test,
+                    y_test=y_test,
+                    threshold=optimal_threshold,
+                    seed=seed,
+                )
+
+                # Display results
+                console.print(f"\n[bold magenta]{'═' * 70}[/bold magenta]")
+                console.print(f"[bold magenta]{'Hybrid Model Performance':^70}[/bold magenta]")
+                console.print(f"[bold magenta]{'═' * 70}[/bold magenta]\n")
+
+                display_test_evaluation("Hybrid → Test", best_cv_score, hybrid_metrics)
+
+                # Display performance comparison
+                console.print(f"\n[bold cyan]Performance Summary[/bold cyan]")
+                from rich.table import Table
+                perf_table = Table(show_header=True, header_style="bold magenta")
+                perf_table.add_column("Scenario", style="cyan", width=20)
+                perf_table.add_column("AUROC", justify="right", width=10)
+                perf_table.add_column("F1", justify="right", width=10)
+                perf_table.add_column("Precision", justify="right", width=10)
+                perf_table.add_column("Recall", justify="right", width=10)
+
+                perf_table.add_row(
+                    "Real baseline",
+                    f"{real_metrics['auroc']:.4f}",
+                    f"{real_metrics['f1']:.4f}",
+                    f"{real_metrics['precision']:.4f}",
+                    f"{real_metrics['recall']:.4f}",
+                )
+                perf_table.add_row(
+                    "Synthetic only",
+                    f"{synth_metrics['auroc']:.4f}",
+                    f"{synth_metrics['f1']:.4f}",
+                    f"{synth_metrics['precision']:.4f}",
+                    f"{synth_metrics['recall']:.4f}",
+                )
+                perf_table.add_row(
+                    "[green]Hybrid[/green]",
+                    f"[green]{hybrid_metrics['auroc']:.4f}[/green]",
+                    f"[green]{hybrid_metrics['f1']:.4f}[/green]",
+                    f"[green]{hybrid_metrics['precision']:.4f}[/green]",
+                    f"[green]{hybrid_metrics['recall']:.4f}[/green]",
+                )
+                console.print(perf_table)
+
+                # Display gain/loss vs baseline
+                console.print(f"\n[bold cyan]Hybrid vs Real Baseline[/bold cyan]")
+                auroc_gain = hybrid_metrics['auroc'] - real_metrics['auroc']
+                f1_gain = hybrid_metrics['f1'] - real_metrics['f1']
+                prec_gain = hybrid_metrics['precision'] - real_metrics['precision']
+                rec_gain = hybrid_metrics['recall'] - real_metrics['recall']
+
+                def format_gain(val):
+                    if val > 0:
+                        return f"[green]+{val:.4f}[/green]"
+                    elif val < 0:
+                        return f"[red]{val:.4f}[/red]"
+                    else:
+                        return f"{val:.4f}"
+
+                console.print(f"    AUROC:     {format_gain(auroc_gain)}")
+                console.print(f"    F1:        {format_gain(f1_gain)}")
+                console.print(f"    Precision: {format_gain(prec_gain)}")
+                console.print(f"    Recall:    {format_gain(rec_gain)}")
+
         # Save JSON summary
         summary_path = output_file.parent / f"{output_file.stem}_summary.json"
         summary_output = {
@@ -1900,6 +2023,24 @@ def evaluate_synthetic(
             },
             "leaf_alignment": leaf_results,
         }
+
+        # Add hybrid metrics if available
+        if hybrid_metrics is not None:
+            summary_output["hybrid_evaluation"] = {
+                "hybrid_to_test": hybrid_metrics,
+                "hybrid_vs_real": {
+                    "auroc": float(hybrid_metrics['auroc'] - real_metrics['auroc']),
+                    "f1": float(hybrid_metrics['f1'] - real_metrics['f1']),
+                    "precision": float(hybrid_metrics['precision'] - real_metrics['precision']),
+                    "recall": float(hybrid_metrics['recall'] - real_metrics['recall']),
+                },
+                "hybrid_vs_synthetic": {
+                    "auroc": float(hybrid_metrics['auroc'] - synth_metrics['auroc']),
+                    "f1": float(hybrid_metrics['f1'] - synth_metrics['f1']),
+                    "precision": float(hybrid_metrics['precision'] - synth_metrics['precision']),
+                    "recall": float(hybrid_metrics['recall'] - synth_metrics['recall']),
+                },
+            }
 
         with open(summary_path, "w") as f:
             json.dump(summary_output, f, indent=2)
