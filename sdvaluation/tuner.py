@@ -718,13 +718,23 @@ def evaluate_on_test(
     # This is critical when training data differs from hyperparameter tuning data
     # (e.g., hybrid datasets, filtered datasets, or synthetic data)
     if 'scale_pos_weight' in params:
+        original_weight = params['scale_pos_weight']
         n_neg = np.sum(y_train == 0)
         n_pos = np.sum(y_train == 1)
+
+        console.print(f"[dim]  Training data: {n_neg:,} negative, {n_pos:,} positive ({100*n_pos/len(y_train):.1f}% positive)[/dim]")
+        console.print(f"[dim]  Original scale_pos_weight: {original_weight:.2f}[/dim]")
+
         if n_pos > 0:
-            params['scale_pos_weight'] = n_neg / n_pos
+            new_weight = n_neg / n_pos
+            params['scale_pos_weight'] = new_weight
+            console.print(f"[dim]  Recalculated scale_pos_weight: {new_weight:.2f}[/dim]")
+            if abs(new_weight - original_weight) > 0.5:
+                console.print(f"[yellow]  ⚠ Significant change in scale_pos_weight: {original_weight:.2f} → {new_weight:.2f}[/yellow]")
         else:
             # If no positive samples, remove scale_pos_weight to avoid errors
             params.pop('scale_pos_weight', None)
+            console.print(f"[red]  ⚠ No positive samples! Removed scale_pos_weight[/red]")
 
     # Train model on full training data
     model = LGBMClassifier(**params)
