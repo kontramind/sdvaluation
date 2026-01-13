@@ -691,13 +691,14 @@ def evaluate_on_test(
     y_test: pd.Series,
     threshold: float,
     seed: int = 42,
+    is_filtered_hybrid: bool = False,
 ) -> Dict[str, Any]:
     """
     Train model with given params and evaluate on test data.
 
-    Automatically recalculates scale_pos_weight based on the actual training
-    data distribution to handle cases where class balance differs from the
-    original tuning data (e.g., hybrid datasets with filtered synthetic points).
+    For drop-in replacement testing, only recalculates scale_pos_weight if it
+    was present in the original hyperparameters. Exception: filtered hybrid
+    datasets always get scale_pos_weight due to extreme class imbalance.
 
     Args:
         params: LightGBM hyperparameters
@@ -707,6 +708,7 @@ def evaluate_on_test(
         y_test: Test labels
         threshold: Classification threshold
         seed: Random seed
+        is_filtered_hybrid: If True, always add scale_pos_weight (for extreme imbalance)
 
     Returns:
         Dictionary with test metrics and confusion matrix
@@ -728,29 +730,40 @@ def evaluate_on_test(
     # We prefer explicit scale_pos_weight for better control and visibility
     if 'is_unbalance' in params:
         params.pop('is_unbalance')
-        console.print(f"  [yellow]⚠️  Removed is_unbalance flag to use explicit scale_pos_weight instead[/yellow]")
+        console.print(f"  [yellow]Removed is_unbalance flag (conflicts with scale_pos_weight)[/yellow]")
 
-    # Recalculate/set scale_pos_weight based on actual training data distribution
-    # This is CRITICAL when training data differs from hyperparameter tuning data
-    # (e.g., hybrid datasets, filtered datasets, or synthetic data)
+    # Handle scale_pos_weight based on scenario
+    # For drop-in replacement: Only recalculate if present (respects tuning method)
+    # For filtered hybrid: Always add (extreme class imbalance requires it)
     original_weight = params.get('scale_pos_weight', None)
+    has_original_weight = original_weight is not None
 
-    if original_weight is not None:
+    if has_original_weight:
         console.print(f"  Original scale_pos_weight from hyperparams: [yellow]{original_weight:.2f}[/yellow]")
     else:
-        console.print(f"  [yellow]No scale_pos_weight in hyperparams - will calculate from data[/yellow]")
+        console.print(f"  No scale_pos_weight in hyperparams (tuned with imbalance_method='none')")
 
-    if n_pos > 0:
+    # Decide whether to set/recalculate scale_pos_weight
+    should_set_weight = has_original_weight or is_filtered_hybrid
+
+    if should_set_weight and n_pos > 0:
         new_weight = n_neg / n_pos
         params['scale_pos_weight'] = new_weight
-        console.print(f"  Setting scale_pos_weight for actual data: [green]{new_weight:.2f}[/green]")
 
-        if original_weight is not None and abs(new_weight - original_weight) > 0.5:
-            console.print(f"[bold yellow]  ⚠️  SIGNIFICANT CHANGE: {original_weight:.2f} → {new_weight:.2f} (diff: {abs(new_weight - original_weight):.2f})[/bold yellow]")
-        elif original_weight is None:
-            console.print(f"[bold yellow]  ⚠️  ADDED scale_pos_weight (was missing from hyperparams)[/bold yellow]")
+        if has_original_weight:
+            # Recalculating existing weight
+            console.print(f"  Recalculated scale_pos_weight for actual data: [green]{new_weight:.2f}[/green]")
+            if abs(new_weight - original_weight) > 0.5:
+                console.print(f"[bold yellow]  ⚠️  SIGNIFICANT CHANGE: {original_weight:.2f} → {new_weight:.2f} (diff: {abs(new_weight - original_weight):.2f})[/bold yellow]")
+        else:
+            # Adding weight for filtered hybrid only
+            console.print(f"[bold yellow]  ⚠️  FILTERED HYBRID: Adding scale_pos_weight={new_weight:.2f} due to extreme class shift[/bold yellow]")
+            console.print(f"[bold yellow]     (Class imbalance: {pos_pct:.1f}% positive - too extreme for no balancing)[/bold yellow]")
+    elif not should_set_weight:
+        # Drop-in replacement with no original weight - preserve tuning method
+        console.print(f"  Preserving original tuning method (no scale_pos_weight)")
     else:
-        # If no positive samples, remove scale_pos_weight to avoid errors
+        # No positive samples - remove any weight
         params.pop('scale_pos_weight', None)
         console.print(f"[bold red]  ⚠️  NO POSITIVE SAMPLES! Removed scale_pos_weight[/bold red]")
 
@@ -2141,6 +2154,7 @@ def evaluate_synthetic(
                     y_test=y_test,
                     threshold=optimal_threshold,
                     seed=seed,
+                    is_filtered_hybrid=True,  # Always add scale_pos_weight due to extreme imbalance
                 )
 
                 # Display results
