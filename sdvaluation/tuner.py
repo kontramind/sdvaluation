@@ -724,6 +724,12 @@ def evaluate_on_test(
     console.print(f"[bold cyan]EVALUATE_ON_TEST: Training data: {len(y_train):,} samples ({pos_pct:.1f}% positive)[/bold cyan]")
     console.print(f"[bold cyan]{'=' * 70}[/bold cyan]")
 
+    # Remove is_unbalance if present to avoid conflict with scale_pos_weight
+    # We prefer explicit scale_pos_weight for better control and visibility
+    if 'is_unbalance' in params:
+        params.pop('is_unbalance')
+        console.print(f"  [yellow]⚠️  Removed is_unbalance flag to use explicit scale_pos_weight instead[/yellow]")
+
     # Recalculate/set scale_pos_weight based on actual training data distribution
     # This is CRITICAL when training data differs from hyperparameter tuning data
     # (e.g., hybrid datasets, filtered datasets, or synthetic data)
@@ -732,7 +738,7 @@ def evaluate_on_test(
     if original_weight is not None:
         console.print(f"  Original scale_pos_weight from hyperparams: [yellow]{original_weight:.2f}[/yellow]")
     else:
-        console.print(f"  [yellow]⚠️  No scale_pos_weight in hyperparams![/yellow]")
+        console.print(f"  [yellow]No scale_pos_weight in hyperparams - will calculate from data[/yellow]")
 
     if n_pos > 0:
         new_weight = n_neg / n_pos
