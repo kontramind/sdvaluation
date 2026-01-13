@@ -721,6 +721,11 @@ def evaluate_synthetic_data(
         "--retune-threshold-metric",
         help="Metric to optimize classification threshold in Level 3: f1, precision, recall, youden",
     ),
+    test_hybrid: bool = typer.Option(
+        False,
+        "--test-hybrid",
+        help="Test hybrid dataset: train on real data + beneficial synthetic points and evaluate performance",
+    ),
 ) -> None:
     """
     Evaluate synthetic data quality using leaf alignment.
@@ -837,6 +842,7 @@ def evaluate_synthetic_data(
             retune_n_trials=retune_n_trials,
             retune_optimize_metric=retune_optimize_metric,
             retune_threshold_metric=retune_threshold_metric,
+            test_hybrid=test_hybrid,
         )
 
         # Display execution time
