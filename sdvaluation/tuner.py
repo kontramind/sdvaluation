@@ -722,19 +722,20 @@ def evaluate_on_test(
         n_neg = np.sum(y_train == 0)
         n_pos = np.sum(y_train == 1)
 
-        console.print(f"[dim]  Training data: {n_neg:,} negative, {n_pos:,} positive ({100*n_pos/len(y_train):.1f}% positive)[/dim]")
-        console.print(f"[dim]  Original scale_pos_weight: {original_weight:.2f}[/dim]")
+        console.print(f"[bold cyan]>>> SCALE_POS_WEIGHT RECALCULATION <<<[/bold cyan]")
+        console.print(f"  Training data: {n_neg:,} negative, {n_pos:,} positive ({100*n_pos/len(y_train):.1f}% positive)")
+        console.print(f"  Original scale_pos_weight from hyperparams.json: [yellow]{original_weight:.2f}[/yellow]")
 
         if n_pos > 0:
             new_weight = n_neg / n_pos
             params['scale_pos_weight'] = new_weight
-            console.print(f"[dim]  Recalculated scale_pos_weight: {new_weight:.2f}[/dim]")
+            console.print(f"  Recalculated scale_pos_weight for actual data: [green]{new_weight:.2f}[/green]")
             if abs(new_weight - original_weight) > 0.5:
-                console.print(f"[yellow]  ⚠ Significant change in scale_pos_weight: {original_weight:.2f} → {new_weight:.2f}[/yellow]")
+                console.print(f"[bold yellow]  ⚠️  SIGNIFICANT CHANGE: {original_weight:.2f} → {new_weight:.2f} (diff: {abs(new_weight - original_weight):.2f})[/bold yellow]")
         else:
             # If no positive samples, remove scale_pos_weight to avoid errors
             params.pop('scale_pos_weight', None)
-            console.print(f"[red]  ⚠ No positive samples! Removed scale_pos_weight[/red]")
+            console.print(f"[bold red]  ⚠️  NO POSITIVE SAMPLES! Removed scale_pos_weight[/bold red]")
 
     # Train model on full training data
     model = LGBMClassifier(**params)
