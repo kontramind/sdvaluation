@@ -726,6 +726,11 @@ def evaluate_synthetic_data(
         "--test-hybrid",
         help="Test hybrid dataset: train on real data + beneficial synthetic points and evaluate performance",
     ),
+    test_hybrid_filtered: bool = typer.Option(
+        False,
+        "--test-hybrid-filtered",
+        help="Test filtered hybrid: train on beneficial real + beneficial synthetic (applies leaf alignment to both datasets)",
+    ),
 ) -> None:
     """
     Evaluate synthetic data quality using leaf alignment.
@@ -843,6 +848,7 @@ def evaluate_synthetic_data(
             retune_optimize_metric=retune_optimize_metric,
             retune_threshold_metric=retune_threshold_metric,
             test_hybrid=test_hybrid,
+            test_hybrid_filtered=test_hybrid_filtered,
         )
 
         # Display execution time

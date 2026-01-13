@@ -1079,6 +1079,7 @@ def evaluate_synthetic(
     retune_optimize_metric: str = "auroc",
     retune_threshold_metric: str = "f1",
     test_hybrid: bool = False,
+    test_hybrid_filtered: bool = False,
 ) -> Dict[str, Any]:
     """
     Evaluate synthetic data quality using leaf alignment.
@@ -1107,6 +1108,7 @@ def evaluate_synthetic(
         retune_optimize_metric: Metric to optimize in Level 3 (default: 'auroc')
         retune_threshold_metric: Threshold metric for Level 3 (default: 'f1')
         test_hybrid: If True, also evaluate hybrid (real + beneficial synthetic) dataset
+        test_hybrid_filtered: If True, evaluate filtered hybrid (beneficial real + beneficial synthetic)
 
     Returns:
         Dictionary with evaluation results
@@ -1995,6 +1997,174 @@ def evaluate_synthetic(
                 console.print(f"    Precision: {format_gain(prec_gain)}")
                 console.print(f"    Recall:    {format_gain(rec_gain)}")
 
+        # ═══════════════════════════════════════════════════════════════════
+        # FILTERED HYBRID TEST: Beneficial Real + Beneficial Synthetic
+        # ═══════════════════════════════════════════════════════════════════
+        hybrid_filtered_metrics = None
+        if test_hybrid_filtered:
+            console.print(f"\n[bold purple]{'═' * 70}[/bold purple]")
+            console.print(f"[bold purple]{'Filtered Hybrid Dataset Evaluation':^70}[/bold purple]")
+            console.print(f"[bold purple]{'═' * 70}[/bold purple]\n")
+            console.print("[dim]Testing filtered hybrid = Beneficial real + Beneficial synthetic[/dim]")
+            console.print("[yellow]⚠ WARNING: This filters real training data based on test set alignment[/yellow]")
+            console.print("[yellow]  Consider potential data leakage if using for final model selection[/yellow]\n")
+
+            # Run leaf alignment on REAL training data
+            console.print("[bold]Step 1: Running leaf alignment on real training data...[/bold]")
+
+            real_leaf_output_file = output_file.parent / f"{output_file.stem}_real_training.csv"
+
+            real_leaf_results = run_leaf_alignment(
+                X_synthetic=X_train,
+                y_synthetic=y_train,
+                X_real_test=X_test,
+                y_real_test=y_test,
+                lgbm_params=lgbm_params,
+                output_file=real_leaf_output_file,
+                n_estimators=n_estimators,
+                n_jobs=1,
+                random_state=seed,
+            )
+
+            # Read the CSV files with leaf alignment results
+            real_leaf_df = pd.read_csv(real_leaf_output_file)
+            synth_leaf_df = pd.read_csv(output_file)
+
+            # Filter for beneficial points (CI lower > 0)
+            beneficial_real_mask = real_leaf_df['utility_ci_lower'] > 0
+            beneficial_synth_mask = synth_leaf_df['utility_ci_lower'] > 0
+
+            n_beneficial_real = beneficial_real_mask.sum()
+            n_beneficial_synth = beneficial_synth_mask.sum()
+
+            console.print(f"[green]✓ Real training analysis complete[/green]")
+            console.print(f"  Beneficial real points:     {n_beneficial_real:,} / {len(X_train):,} ({100*n_beneficial_real/len(X_train):.1f}%)")
+            console.print(f"  Beneficial synthetic:       {n_beneficial_synth:,} / {len(X_synthetic):,} ({100*n_beneficial_synth/len(X_synthetic):.1f}%)")
+
+            if n_beneficial_real == 0 and n_beneficial_synth == 0:
+                console.print("[yellow]⚠ No beneficial points found in either dataset. Skipping filtered hybrid test.[/yellow]")
+            else:
+                console.print(f"\n[bold]Step 2: Creating filtered hybrid dataset...[/bold]")
+
+                # Get indices of beneficial points
+                beneficial_real_indices = real_leaf_df[beneficial_real_mask]['synthetic_index'].values
+                beneficial_synth_indices = synth_leaf_df[beneficial_synth_mask]['synthetic_index'].values
+
+                # Extract beneficial data
+                X_beneficial_real = X_train.iloc[beneficial_real_indices].reset_index(drop=True)
+                y_beneficial_real = y_train.iloc[beneficial_real_indices].reset_index(drop=True)
+
+                X_beneficial_synth = X_synthetic.iloc[beneficial_synth_indices].reset_index(drop=True)
+                y_beneficial_synth = y_synthetic.iloc[beneficial_synth_indices].reset_index(drop=True)
+
+                # Create filtered hybrid dataset
+                X_hybrid_filtered = pd.concat([X_beneficial_real, X_beneficial_synth], ignore_index=True)
+                y_hybrid_filtered = pd.concat([y_beneficial_real, y_beneficial_synth], ignore_index=True)
+
+                # Display composition
+                console.print("[bold]Filtered Hybrid Dataset Composition:[/bold]")
+                console.print(f"  Beneficial real points:     {n_beneficial_real:,}")
+                console.print(f"  Beneficial synthetic:       {n_beneficial_synth:,}")
+                console.print(f"  Total filtered hybrid:      {len(X_hybrid_filtered):,}")
+                console.print(f"  Size vs original real:      {100 * len(X_hybrid_filtered) / len(X_train):.1f}%")
+
+                # Display class distribution
+                real_all_pos_pct = 100 * np.sum(y_train == 1) / len(y_train)
+                beneficial_real_pos_pct = 100 * np.sum(y_beneficial_real == 1) / len(y_beneficial_real) if len(y_beneficial_real) > 0 else 0
+                beneficial_synth_pos_pct = 100 * np.sum(y_beneficial_synth == 1) / len(y_beneficial_synth) if len(y_beneficial_synth) > 0 else 0
+                hybrid_filtered_pos_pct = 100 * np.sum(y_hybrid_filtered == 1) / len(y_hybrid_filtered)
+
+                console.print(f"\n[bold]Class Distribution:[/bold]")
+                console.print(f"  All real training:          {real_all_pos_pct:.1f}% positive")
+                console.print(f"  Beneficial real:            {beneficial_real_pos_pct:.1f}% positive")
+                console.print(f"  Beneficial synthetic:       {beneficial_synth_pos_pct:.1f}% positive")
+                console.print(f"  Filtered hybrid:            {hybrid_filtered_pos_pct:.1f}% positive")
+
+                # Train on filtered hybrid and evaluate
+                console.print(f"\n[bold]Step 3: Training on filtered hybrid dataset...[/bold]")
+                console.print(f"[dim]  Using real data's hyperparameters...[/dim]")
+
+                hybrid_filtered_metrics = evaluate_on_test(
+                    params=lgbm_params,
+                    X_train=X_hybrid_filtered,
+                    y_train=y_hybrid_filtered,
+                    X_test=X_test,
+                    y_test=y_test,
+                    threshold=optimal_threshold,
+                    seed=seed,
+                )
+
+                # Display results
+                console.print(f"\n[bold magenta]{'═' * 70}[/bold magenta]")
+                console.print(f"[bold magenta]{'Filtered Hybrid Model Performance':^70}[/bold magenta]")
+                console.print(f"[bold magenta]{'═' * 70}[/bold magenta]\n")
+
+                display_test_evaluation("Filtered Hybrid → Test", best_cv_score, hybrid_filtered_metrics)
+
+                # Display comprehensive performance comparison
+                console.print(f"\n[bold cyan]Complete Performance Summary[/bold cyan]")
+                from rich.table import Table
+                perf_table_full = Table(show_header=True, header_style="bold magenta")
+                perf_table_full.add_column("Scenario", style="cyan", width=25)
+                perf_table_full.add_column("AUROC", justify="right", width=10)
+                perf_table_full.add_column("F1", justify="right", width=10)
+                perf_table_full.add_column("Precision", justify="right", width=10)
+                perf_table_full.add_column("Recall", justify="right", width=10)
+
+                perf_table_full.add_row(
+                    "Real baseline",
+                    f"{real_metrics['auroc']:.4f}",
+                    f"{real_metrics['f1']:.4f}",
+                    f"{real_metrics['precision']:.4f}",
+                    f"{real_metrics['recall']:.4f}",
+                )
+                perf_table_full.add_row(
+                    "Synthetic only",
+                    f"{synth_metrics['auroc']:.4f}",
+                    f"{synth_metrics['f1']:.4f}",
+                    f"{synth_metrics['precision']:.4f}",
+                    f"{synth_metrics['recall']:.4f}",
+                )
+
+                # Add standard hybrid if available
+                if hybrid_metrics is not None:
+                    perf_table_full.add_row(
+                        "[green]Hybrid (standard)[/green]",
+                        f"[green]{hybrid_metrics['auroc']:.4f}[/green]",
+                        f"[green]{hybrid_metrics['f1']:.4f}[/green]",
+                        f"[green]{hybrid_metrics['precision']:.4f}[/green]",
+                        f"[green]{hybrid_metrics['recall']:.4f}[/green]",
+                    )
+
+                perf_table_full.add_row(
+                    "[bold purple]Hybrid (filtered)[/bold purple]",
+                    f"[bold purple]{hybrid_filtered_metrics['auroc']:.4f}[/bold purple]",
+                    f"[bold purple]{hybrid_filtered_metrics['f1']:.4f}[/bold purple]",
+                    f"[bold purple]{hybrid_filtered_metrics['precision']:.4f}[/bold purple]",
+                    f"[bold purple]{hybrid_filtered_metrics['recall']:.4f}[/bold purple]",
+                )
+                console.print(perf_table_full)
+
+                # Display gain/loss vs baseline
+                console.print(f"\n[bold cyan]Filtered Hybrid vs Real Baseline[/bold cyan]")
+                auroc_gain_filt = hybrid_filtered_metrics['auroc'] - real_metrics['auroc']
+                f1_gain_filt = hybrid_filtered_metrics['f1'] - real_metrics['f1']
+                prec_gain_filt = hybrid_filtered_metrics['precision'] - real_metrics['precision']
+                rec_gain_filt = hybrid_filtered_metrics['recall'] - real_metrics['recall']
+
+                def format_gain(val):
+                    if val > 0:
+                        return f"[green]+{val:.4f}[/green]"
+                    elif val < 0:
+                        return f"[red]{val:.4f}[/red]"
+                    else:
+                        return f"{val:.4f}"
+
+                console.print(f"    AUROC:     {format_gain(auroc_gain_filt)}")
+                console.print(f"    F1:        {format_gain(f1_gain_filt)}")
+                console.print(f"    Precision: {format_gain(prec_gain_filt)}")
+                console.print(f"    Recall:    {format_gain(rec_gain_filt)}")
+
         # Save JSON summary
         summary_path = output_file.parent / f"{output_file.stem}_summary.json"
         summary_output = {
@@ -2041,6 +2211,31 @@ def evaluate_synthetic(
                     "recall": float(hybrid_metrics['recall'] - synth_metrics['recall']),
                 },
             }
+
+        # Add filtered hybrid metrics if available
+        if hybrid_filtered_metrics is not None:
+            summary_output["hybrid_filtered_evaluation"] = {
+                "hybrid_filtered_to_test": hybrid_filtered_metrics,
+                "hybrid_filtered_vs_real": {
+                    "auroc": float(hybrid_filtered_metrics['auroc'] - real_metrics['auroc']),
+                    "f1": float(hybrid_filtered_metrics['f1'] - real_metrics['f1']),
+                    "precision": float(hybrid_filtered_metrics['precision'] - real_metrics['precision']),
+                    "recall": float(hybrid_filtered_metrics['recall'] - real_metrics['recall']),
+                },
+                "hybrid_filtered_vs_synthetic": {
+                    "auroc": float(hybrid_filtered_metrics['auroc'] - synth_metrics['auroc']),
+                    "f1": float(hybrid_filtered_metrics['f1'] - synth_metrics['f1']),
+                    "precision": float(hybrid_filtered_metrics['precision'] - synth_metrics['precision']),
+                    "recall": float(hybrid_filtered_metrics['recall'] - synth_metrics['recall']),
+                },
+            }
+            if hybrid_metrics is not None:
+                summary_output["hybrid_filtered_evaluation"]["hybrid_filtered_vs_hybrid"] = {
+                    "auroc": float(hybrid_filtered_metrics['auroc'] - hybrid_metrics['auroc']),
+                    "f1": float(hybrid_filtered_metrics['f1'] - hybrid_metrics['f1']),
+                    "precision": float(hybrid_filtered_metrics['precision'] - hybrid_metrics['precision']),
+                    "recall": float(hybrid_filtered_metrics['recall'] - hybrid_metrics['recall']),
+                }
 
         with open(summary_path, "w") as f:
             json.dump(summary_output, f, indent=2)
