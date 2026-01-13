@@ -714,28 +714,47 @@ def evaluate_on_test(
     # Make a copy to avoid mutating the original params
     params = params.copy()
 
-    # Recalculate scale_pos_weight based on actual training data distribution
-    # This is critical when training data differs from hyperparameter tuning data
+    # Calculate class distribution
+    n_neg = np.sum(y_train == 0)
+    n_pos = np.sum(y_train == 1)
+    pos_pct = 100 * n_pos / len(y_train)
+
+    # Always print training data info
+    console.print(f"[bold cyan]{'=' * 70}[/bold cyan]")
+    console.print(f"[bold cyan]EVALUATE_ON_TEST: Training data: {len(y_train):,} samples ({pos_pct:.1f}% positive)[/bold cyan]")
+    console.print(f"[bold cyan]{'=' * 70}[/bold cyan]")
+
+    # Remove is_unbalance if present to avoid conflict with scale_pos_weight
+    # We prefer explicit scale_pos_weight for better control and visibility
+    if 'is_unbalance' in params:
+        params.pop('is_unbalance')
+        console.print(f"  [yellow]⚠️  Removed is_unbalance flag to use explicit scale_pos_weight instead[/yellow]")
+
+    # Recalculate/set scale_pos_weight based on actual training data distribution
+    # This is CRITICAL when training data differs from hyperparameter tuning data
     # (e.g., hybrid datasets, filtered datasets, or synthetic data)
-    if 'scale_pos_weight' in params:
-        original_weight = params['scale_pos_weight']
-        n_neg = np.sum(y_train == 0)
-        n_pos = np.sum(y_train == 1)
+    original_weight = params.get('scale_pos_weight', None)
 
-        console.print(f"[bold cyan]>>> SCALE_POS_WEIGHT RECALCULATION <<<[/bold cyan]")
-        console.print(f"  Training data: {n_neg:,} negative, {n_pos:,} positive ({100*n_pos/len(y_train):.1f}% positive)")
-        console.print(f"  Original scale_pos_weight from hyperparams.json: [yellow]{original_weight:.2f}[/yellow]")
+    if original_weight is not None:
+        console.print(f"  Original scale_pos_weight from hyperparams: [yellow]{original_weight:.2f}[/yellow]")
+    else:
+        console.print(f"  [yellow]No scale_pos_weight in hyperparams - will calculate from data[/yellow]")
 
-        if n_pos > 0:
-            new_weight = n_neg / n_pos
-            params['scale_pos_weight'] = new_weight
-            console.print(f"  Recalculated scale_pos_weight for actual data: [green]{new_weight:.2f}[/green]")
-            if abs(new_weight - original_weight) > 0.5:
-                console.print(f"[bold yellow]  ⚠️  SIGNIFICANT CHANGE: {original_weight:.2f} → {new_weight:.2f} (diff: {abs(new_weight - original_weight):.2f})[/bold yellow]")
-        else:
-            # If no positive samples, remove scale_pos_weight to avoid errors
-            params.pop('scale_pos_weight', None)
-            console.print(f"[bold red]  ⚠️  NO POSITIVE SAMPLES! Removed scale_pos_weight[/bold red]")
+    if n_pos > 0:
+        new_weight = n_neg / n_pos
+        params['scale_pos_weight'] = new_weight
+        console.print(f"  Setting scale_pos_weight for actual data: [green]{new_weight:.2f}[/green]")
+
+        if original_weight is not None and abs(new_weight - original_weight) > 0.5:
+            console.print(f"[bold yellow]  ⚠️  SIGNIFICANT CHANGE: {original_weight:.2f} → {new_weight:.2f} (diff: {abs(new_weight - original_weight):.2f})[/bold yellow]")
+        elif original_weight is None:
+            console.print(f"[bold yellow]  ⚠️  ADDED scale_pos_weight (was missing from hyperparams)[/bold yellow]")
+    else:
+        # If no positive samples, remove scale_pos_weight to avoid errors
+        params.pop('scale_pos_weight', None)
+        console.print(f"[bold red]  ⚠️  NO POSITIVE SAMPLES! Removed scale_pos_weight[/bold red]")
+
+    console.print(f"[bold cyan]{'=' * 70}[/bold cyan]\n")
 
     # Train model on full training data
     model = LGBMClassifier(**params)
