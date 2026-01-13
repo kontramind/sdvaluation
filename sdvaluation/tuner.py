@@ -695,6 +695,10 @@ def evaluate_on_test(
     """
     Train model with given params and evaluate on test data.
 
+    Automatically recalculates scale_pos_weight based on the actual training
+    data distribution to handle cases where class balance differs from the
+    original tuning data (e.g., hybrid datasets with filtered synthetic points).
+
     Args:
         params: LightGBM hyperparameters
         X_train: Training features
@@ -707,6 +711,21 @@ def evaluate_on_test(
     Returns:
         Dictionary with test metrics and confusion matrix
     """
+    # Make a copy to avoid mutating the original params
+    params = params.copy()
+
+    # Recalculate scale_pos_weight based on actual training data distribution
+    # This is critical when training data differs from hyperparameter tuning data
+    # (e.g., hybrid datasets, filtered datasets, or synthetic data)
+    if 'scale_pos_weight' in params:
+        n_neg = np.sum(y_train == 0)
+        n_pos = np.sum(y_train == 1)
+        if n_pos > 0:
+            params['scale_pos_weight'] = n_neg / n_pos
+        else:
+            # If no positive samples, remove scale_pos_weight to avoid errors
+            params.pop('scale_pos_weight', None)
+
     # Train model on full training data
     model = LGBMClassifier(**params)
     model.fit(X_train, y_train)
