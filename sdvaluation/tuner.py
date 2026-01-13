@@ -2031,7 +2031,7 @@ def evaluate_synthetic(
             # Run leaf alignment on REAL training data
             console.print("[bold]Step 1: Running leaf alignment on real training data...[/bold]")
 
-            real_leaf_output_file = output_file.parent / f"{output_file.stem}_real_training.csv"
+            real_leaf_output_file = output_file.parent / f"{output_file.stem}_real_leaf_analysis.csv"
 
             real_leaf_results = run_leaf_alignment(
                 X_synthetic=X_train,
