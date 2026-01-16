@@ -369,7 +369,7 @@ def run_leaf_alignment(
         X_real_test,
         y_real_test.values,
         empty_leaf_penalty,
-        n_jobs
+        n_jobs,
     )
 
     # Compute confidence intervals

@@ -2086,7 +2086,7 @@ def evaluate_synthetic(
                 n_estimators=n_estimators,
                 n_jobs=1,
                 random_state=seed,
-            )
+                )
 
             # Read the CSV files with leaf alignment results
             real_leaf_df = pd.read_csv(real_leaf_output_file)
