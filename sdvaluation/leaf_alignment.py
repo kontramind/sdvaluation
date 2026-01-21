@@ -315,6 +315,11 @@ def run_leaf_alignment(
 
         See ENHANCEMENTS.md #2 for threshold selection methods.
     """
+    # Set global random seeds for reproducibility
+    import random
+    random.seed(random_state)
+    np.random.seed(random_state)
+
     # Prepare parameters
     params = lgbm_params.copy()
     params.pop('imbalance_method', None)
@@ -322,6 +327,9 @@ def run_leaf_alignment(
     params.pop('is_unbalance', None)  # Remove is_unbalance to avoid conflict with scale_pos_weight
     params['n_estimators'] = n_estimators
     params['verbose'] = -1  # Suppress output
+    params['random_state'] = random_state  # Ensure reproducibility
+    params['n_jobs'] = 1  # Force single-threaded for deterministic results
+    params['deterministic'] = True  # LightGBM deterministic mode
 
     # Handle class imbalance
     n_pos = np.sum(y_synthetic == 1)

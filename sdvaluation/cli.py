@@ -15,8 +15,12 @@ from rich.console import Console
 
 from .core import run_data_valuation
 from .tuner import tune_dual_scenario, run_leaf_alignment_baseline
+from .cli_point_scores import app as point_scores_app
 
 app = typer.Typer(help="Data Shapley valuation for synthetic data")
+
+# Register subcommand groups
+app.add_typer(point_scores_app, name="point-scores")
 console = Console()
 
 

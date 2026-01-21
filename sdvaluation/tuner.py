@@ -863,6 +863,223 @@ def display_test_evaluation(
     console.print(f"    FNR:       {test_metrics['fnr']:.4f} (False Negative Rate)")
 
 
+def run_leaf_alignment_workflow(
+    dseed_dir: Path,
+    synthetic_file: Path,
+    target_column: str = "READMIT",
+    n_estimators: int = 500,
+    seed: int = 42,
+    output_file: Optional[Path] = None,
+    # Optional pre-loaded data (for eval command to pass already-loaded data)
+    preloaded_data: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """
+    Run the complete leaf alignment workflow with performance evaluation.
+
+    This is the shared implementation used by both `eval` and `point-scores leaf-alignment`
+    commands to ensure identical results.
+
+    Workflow:
+    1. Load hyperparameters from dseed_dir/hyperparams.json
+    2. Load and encode data (fit encoder on real training, transform all)
+    3. Evaluate Real Training → Real Test (baseline)
+    4. Evaluate Synthetic Training → Real Test
+    5. Run leaf alignment analysis
+    6. Return comprehensive results
+
+    Args:
+        dseed_dir: Path to dseed directory
+        synthetic_file: Path to synthetic data CSV
+        target_column: Name of target column
+        n_estimators: Number of trees for leaf alignment
+        seed: Random seed for reproducibility
+        output_file: Output path for per-point CSV scores
+        preloaded_data: Optional dict with pre-loaded data to skip loading:
+            - X_train, y_train: Real training data (encoded)
+            - X_test, y_test: Real test data (encoded)
+            - X_synthetic, y_synthetic: Synthetic data (encoded)
+            - lgbm_params: LightGBM parameters
+            - optimal_threshold: Classification threshold
+            - best_cv_score: CV score from tuning
+            - real_metrics: Pre-computed real→test metrics (optional)
+
+    Returns:
+        Dictionary with performance metrics and leaf alignment results
+    """
+    import random
+    from .leaf_alignment import run_leaf_alignment
+    from .encoding import RDTDatasetEncoder, load_encoding_config
+
+    dseed_dir = Path(dseed_dir)
+    synthetic_file = Path(synthetic_file)
+
+    # =========================================================================
+    # Use pre-loaded data if provided, otherwise load from files
+    # =========================================================================
+    if preloaded_data is not None:
+        # Extract pre-loaded data
+        X_train = preloaded_data["X_train"]
+        y_train = preloaded_data["y_train"]
+        X_test = preloaded_data["X_test"]
+        y_test = preloaded_data["y_test"]
+        X_synthetic = preloaded_data["X_synthetic"]
+        y_synthetic = preloaded_data["y_synthetic"]
+        lgbm_params = preloaded_data["lgbm_params"]
+        optimal_threshold = preloaded_data["optimal_threshold"]
+        best_cv_score = preloaded_data["best_cv_score"]
+        real_metrics = preloaded_data.get("real_metrics")  # Optional
+    else:
+        # =====================================================================
+        # Step 1: File Discovery
+        # =====================================================================
+        discovery = DseedFileDiscovery(dseed_dir)
+
+        if discovery.files["test"] is None:
+            raise FileNotFoundError(f"Test data not found in {dseed_dir}")
+
+        hyperparams_path = dseed_dir / "hyperparams.json"
+        if not hyperparams_path.exists():
+            raise FileNotFoundError(
+                f"hyperparams.json not found in {dseed_dir}. "
+                "Please run 'sdvaluation tune' first."
+            )
+
+        # =====================================================================
+        # Step 2: Load Hyperparameters
+        # =====================================================================
+        with open(hyperparams_path, "r") as f:
+            hyperparams_data = json.load(f)
+
+        if "hyperparams" in hyperparams_data:
+            lgbm_params = hyperparams_data["hyperparams"]["lgbm_params"]
+            best_cv_score = hyperparams_data["hyperparams"]["best_cv_score"]
+            optimal_threshold = hyperparams_data["hyperparams"].get("optimal_threshold", 0.5)
+        elif "optimal" in hyperparams_data:
+            lgbm_params = hyperparams_data["optimal"]["lgbm_params"]
+            best_cv_score = hyperparams_data["optimal"]["best_cv_score"]
+            optimal_threshold = hyperparams_data["optimal"].get("optimal_threshold", 0.5)
+        else:
+            raise ValueError("Unrecognized hyperparams.json format")
+
+        # =====================================================================
+        # Step 3: Load and Encode Data
+        # =====================================================================
+        # Set random seed before encoding for reproducibility
+        # This ensures identical encoded data as eval's preloaded data
+        random.seed(seed)
+        np.random.seed(seed)
+
+        config = load_encoding_config(discovery.files['encoding'])
+
+        # Load real training data and fit encoder
+        train_data = pd.read_csv(discovery.files['training'])
+        X_train_raw = train_data.drop(columns=[target_column])
+        y_train = train_data[target_column]
+
+        feature_columns = set(X_train_raw.columns)
+        filtered_config = {
+            "sdtypes": {col: dtype for col, dtype in config["sdtypes"].items() if col in feature_columns},
+            "transformers": {col: transformer for col, transformer in config["transformers"].items() if col in feature_columns},
+        }
+
+        encoder = RDTDatasetEncoder(filtered_config)
+        encoder.fit(X_train_raw)
+        X_train = encoder.transform(X_train_raw).reset_index(drop=True)
+        y_train = y_train.reset_index(drop=True)
+
+        # Load and transform test data
+        test_data = pd.read_csv(discovery.files['test'])
+        X_test_raw = test_data.drop(columns=[target_column])
+        y_test = test_data[target_column]
+        X_test = encoder.transform(X_test_raw).reset_index(drop=True)
+        y_test = y_test.reset_index(drop=True)
+
+        # Load and transform synthetic data
+        synth_data = pd.read_csv(synthetic_file)
+        X_synth_raw = synth_data.drop(columns=[target_column])
+        y_synthetic = synth_data[target_column]
+        X_synthetic = encoder.transform(X_synth_raw).reset_index(drop=True)
+        y_synthetic = y_synthetic.reset_index(drop=True)
+
+        # Set real_metrics to None (will be computed below)
+        real_metrics = None
+
+    # =========================================================================
+    # Step 4: Performance Evaluation
+    # =========================================================================
+    # Reset random state before performance evaluation for reproducibility
+    # This ensures identical results regardless of data loading path
+    random.seed(seed)
+    np.random.seed(seed)
+
+    # Baseline: Real Training → Real Test (skip if already provided)
+    if real_metrics is None:
+        real_metrics = evaluate_on_test(
+            params=lgbm_params,
+            X_train=X_train,
+            y_train=y_train,
+            X_test=X_test,
+            y_test=y_test,
+            threshold=optimal_threshold,
+            seed=seed,
+        )
+
+    # Synthetic: Synthetic Training → Real Test
+    synth_metrics = evaluate_on_test(
+        params=lgbm_params,
+        X_train=X_synthetic,
+        y_train=y_synthetic,
+        X_test=X_test,
+        y_test=y_test,
+        threshold=optimal_threshold,
+        seed=seed,
+    )
+
+    # =========================================================================
+    # Step 5: Leaf Alignment Analysis
+    # =========================================================================
+    if output_file is None:
+        output_file = dseed_dir / "leaf_alignment_scores.csv"
+
+    leaf_results = run_leaf_alignment(
+        X_synthetic=X_synthetic,
+        y_synthetic=y_synthetic,
+        X_real_test=X_test,
+        y_real_test=y_test,
+        lgbm_params=lgbm_params,
+        output_file=output_file,
+        n_estimators=n_estimators,
+        n_jobs=1,  # Always 1 for reproducible results
+        random_state=seed,
+    )
+
+    # =========================================================================
+    # Build Results
+    # =========================================================================
+    return {
+        "hyperparams": {
+            "lgbm_params": lgbm_params,
+            "best_cv_score": best_cv_score,
+            "optimal_threshold": optimal_threshold,
+        },
+        "performance": {
+            "real": real_metrics,
+            "synthetic": synth_metrics,
+            "auroc_gap": real_metrics["auroc"] - synth_metrics["auroc"],
+            "f1_gap": real_metrics["f1"] - synth_metrics["f1"],
+            "precision_gap": real_metrics["precision"] - synth_metrics["precision"],
+            "recall_gap": real_metrics["recall"] - synth_metrics["recall"],
+        },
+        "leaf_alignment": leaf_results,
+        "data_shapes": {
+            "real_train": list(X_train.shape),
+            "real_test": list(X_test.shape),
+            "synthetic": list(X_synthetic.shape),
+        },
+        "output_file": str(output_file),
+    }
+
+
 def tune_hyperparameters(
     X_train: pd.DataFrame,
     y_train: pd.Series,
@@ -1231,6 +1448,12 @@ def evaluate_synthetic(
 
     # Load and encode data (match dual-eval approach: fit on real training, transform others)
     console.print(f"\n[bold]Loading and encoding data...[/bold]")
+
+    # Set random seed before encoding for reproducibility
+    # This ensures identical encoded data when using preloaded_data in workflow
+    import random
+    random.seed(seed)
+    np.random.seed(seed)
 
     # Step 1: Load real training data and fit encoder
     console.print("[cyan]Loading real training data (to fit encoder)...[/cyan]")
@@ -1847,19 +2070,27 @@ def evaluate_synthetic(
         console.print("\n[bold yellow]Running Level 1: Unadjusted Evaluation (Drop-in Replacement Test)[/bold yellow]")
         console.print("[dim]This tests if synthetic can replace real with zero changes (~8s)[/dim]\n")
 
-        # Synthetic: Synthetic training → Real test (unadjusted only)
-        console.print("[bold]Synthetic: Synthetic Training → Real Test[/bold]")
+        # Use shared workflow for reproducible results (same code path as point-scores)
+        # NOTE: We don't use preloaded_data to ensure identical random state sequence
+        # This means data is loaded twice, but guarantees identical results with point-scores
+        console.print("[bold]Running shared leaf alignment workflow...[/bold]")
         console.print("[dim]  Using real data's hyperparameters as-is...[/dim]")
 
-        synth_metrics = evaluate_on_test(
-            params=lgbm_params,
-            X_train=X_synthetic,
-            y_train=y_synthetic,
-            X_test=X_test,
-            y_test=y_test,
-            threshold=optimal_threshold,
+        workflow_results = run_leaf_alignment_workflow(
+            dseed_dir=dseed_dir,
+            synthetic_file=synthetic_file,
+            target_column=target_column,
+            n_estimators=n_estimators,
             seed=seed,
+            output_file=output_file,
+            # No preloaded_data to ensure identical code path with point-scores
         )
+
+        # Extract results from shared workflow
+        # Use workflow's metrics for consistency with leaf_alignment results
+        real_metrics = workflow_results["performance"]["real"]
+        synth_metrics = workflow_results["performance"]["synthetic"]
+        leaf_results = workflow_results["leaf_alignment"]
 
         # Display results
         console.print(f"\n[bold magenta]{'═' * 70}[/bold magenta]")
@@ -1870,30 +2101,18 @@ def evaluate_synthetic(
 
         # Display performance gap
         console.print(f"\n[bold cyan]Performance Gap (Real - Synthetic)[/bold cyan]")
-        console.print(f"    AUROC Gap:     {real_metrics['auroc'] - synth_metrics['auroc']:+.4f}")
-        console.print(f"    F1 Gap:        {real_metrics['f1'] - synth_metrics['f1']:+.4f}")
-        console.print(f"    Precision Gap: {real_metrics['precision'] - synth_metrics['precision']:+.4f}")
-        console.print(f"    Recall Gap:    {real_metrics['recall'] - synth_metrics['recall']:+.4f}")
+        console.print(f"    AUROC Gap:     {workflow_results['performance']['auroc_gap']:+.4f}")
+        console.print(f"    F1 Gap:        {workflow_results['performance']['f1_gap']:+.4f}")
+        console.print(f"    Precision Gap: {workflow_results['performance']['precision_gap']:+.4f}")
+        console.print(f"    Recall Gap:    {workflow_results['performance']['recall_gap']:+.4f}")
 
-        # Run leaf alignment (unadjusted only)
+        # Display leaf alignment header
         console.print(f"\n[bold green]{'═' * 70}[/bold green]")
         console.print(f"[bold green]{'Leaf Alignment Analysis':^70}[/bold green]")
         console.print(f"[bold green]{'═' * 70}[/bold green]\n")
         console.print(f"  Training on: Synthetic data ({len(X_synthetic):,} samples)")
         console.print(f"  Testing on: Real test data ({len(X_test):,} samples)")
         console.print(f"  Using: Hyperparameters tuned on real training data (unadjusted)")
-
-        leaf_results = run_leaf_alignment(
-            X_synthetic=X_synthetic,
-            y_synthetic=y_synthetic,
-            X_real_test=X_test,
-            y_real_test=y_test,
-            lgbm_params=lgbm_params,
-            output_file=output_file,
-            n_estimators=n_estimators,
-            n_jobs=1,  # Always 1 for reproducible results
-            random_state=seed,
-        )
 
         # Display summary
         console.print(f"\n[bold cyan]{'═' * 70}[/bold cyan]")
